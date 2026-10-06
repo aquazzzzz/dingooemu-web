@@ -1,0 +1,1686 @@
+use std::ffi::{c_void, CStr};
+use std::os::raw::{c_char, c_uint};
+use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Instant;
+
+use dingooemu_core::common::audio::OUTPUT_SAMPLE_RATE;
+use dingooemu_core::common::input::{
+    BUTTON_A, BUTTON_B, BUTTON_DOWN, BUTTON_L, BUTTON_LEFT, BUTTON_R, BUTTON_RIGHT, BUTTON_SELECT,
+    BUTTON_START, BUTTON_UP, BUTTON_X, BUTTON_Y,
+};
+use dingooemu_core::common::video::{
+    rotate_rgb565_counterclockwise, ScreenOrientation, FRAMEBUFFER_SIZE, SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+};
+use dingooemu_core::Emulator;
+use dingooemu_core::UnknownInstructionPolicy;
+
+use crate::callbacks;
+use crate::constants::*;
+use crate::types::*;
+use crate::EMULATOR;
+
+const PERFORMANCE_LEVEL: u32 = 4;
+
+#[no_mangle]
+pub extern "C" fn dingooemu_audio_queue_ms() -> f64 {
+    unsafe { EMULATOR.as_ref() }
+        .and_then(Emulator::queued_audio_ms)
+        .unwrap_or(-1.0)
+}
+
+#[no_mangle]
+pub extern "C" fn dingooemu_measure_get(index: u32) -> f64 {
+    match index {
+        16 => unsafe { EMULATOR.as_ref() }.map_or(-1.0, |emulator| emulator.frame_count() as f64),
+        17 => unsafe { EMULATOR.as_ref() }
+            .map_or(-1.0, |emulator| emulator.instruction_count() as f64),
+        18 => 2.0,
+        _ => crate::web_measurement::get(index),
+    }
+}
+
+const FRAMES_PER_SECOND: f64 = 60.0;
+static DIAGNOSTIC_AUDIO_BUFFER_REGISTERED: AtomicBool = AtomicBool::new(false);
+static ASYNC_AUDIO_REGISTERED: AtomicBool = AtomicBool::new(false);
+static PORTRAIT_MODE: AtomicBool = AtomicBool::new(false);
+static VIDEO_GEOMETRY_DIRTY: AtomicBool = AtomicBool::new(false);
+static PORTRAIT_FRAMEBUFFER: Mutex<[u8; FRAMEBUFFER_SIZE]> = Mutex::new([0; FRAMEBUFFER_SIZE]);
+
+#[no_mangle]
+pub extern "C" fn retro_set_environment(callback: RetroEnvironmentCallback) {
+    callbacks::set_environment(callback);
+    set_core_options();
+}
+
+#[no_mangle]
+pub extern "C" fn retro_set_video_refresh(callback: RetroVideoRefreshCallback) {
+    callbacks::set_video_refresh(callback);
+}
+
+#[no_mangle]
+pub extern "C" fn retro_set_audio_sample(callback: RetroAudioSampleCallback) {
+    callbacks::set_audio_sample(callback);
+}
+
+#[no_mangle]
+pub extern "C" fn retro_set_audio_sample_batch(callback: RetroAudioSampleBatchCallback) {
+    callbacks::set_audio_sample_batch(callback);
+}
+
+#[no_mangle]
+pub extern "C" fn retro_set_input_poll(callback: RetroInputPollCallback) {
+    callbacks::set_input_poll(callback);
+}
+
+#[no_mangle]
+pub extern "C" fn retro_set_input_state(callback: RetroInputStateCallback) {
+    callbacks::set_input_state(callback);
+}
+
+#[no_mangle]
+pub extern "C" fn retro_init() {
+    PORTRAIT_MODE.store(false, Ordering::Release);
+    VIDEO_GEOMETRY_DIRTY.store(false, Ordering::Release);
+    callbacks::initialize_log_interface();
+    crate::logger::initialize();
+    log::info!("Libretro core initialized");
+}
+
+#[no_mangle]
+pub extern "C" fn retro_deinit() {
+    update_diagnostic_audio_buffer_status(false);
+    unregister_async_audio();
+    crate::diagnostics::finish(unsafe { EMULATOR.as_ref() });
+    unsafe { EMULATOR = None };
+    PORTRAIT_MODE.store(false, Ordering::Release);
+    VIDEO_GEOMETRY_DIRTY.store(false, Ordering::Release);
+    log::info!("Libretro core deinitialized");
+}
+
+#[no_mangle]
+pub extern "C" fn retro_api_version() -> c_uint {
+    RETRO_API_VERSION
+}
+
+#[no_mangle]
+pub extern "C" fn retro_get_system_info(info: *mut RetroSystemInfo) {
+    let Some(info) = (unsafe { info.as_mut() }) else {
+        return;
+    };
+
+    info.library_name = c"DingooEmu".as_ptr();
+    info.library_version = c"0.3.0".as_ptr();
+    info.valid_extensions = c"app|cc|c2s|c3s".as_ptr();
+    info.need_fullpath = true;
+    info.block_extract = false;
+}
+
+#[no_mangle]
+pub extern "C" fn retro_get_system_av_info(info: *mut RetroSystemAvInfo) {
+    let Some(info) = (unsafe { info.as_mut() }) else {
+        return;
+    };
+
+    info.geometry = video_geometry(screen_orientation());
+    VIDEO_GEOMETRY_DIRTY.store(false, Ordering::Release);
+    info.timing = RetroSystemTiming {
+        fps: FRAMES_PER_SECOND,
+        sample_rate: f64::from(OUTPUT_SAMPLE_RATE),
+    };
+}
+
+#[no_mangle]
+pub extern "C" fn retro_set_controller_port_device(port: c_uint, device: c_uint) {
+    if port == 0 && device != RETRO_DEVICE_NONE && device != RETRO_DEVICE_JOYPAD {
+        log::warn!("Unsupported controller device {device} on port {port}");
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn retro_get_region() -> c_uint {
+    RETRO_REGION_NTSC
+}
+
+#[no_mangle]
+pub extern "C" fn retro_load_game(info: *const RetroGameInfo) -> bool {
+    let Some(info) = (unsafe { info.as_ref() }) else {
+        return false;
+    };
+    if info.path.is_null() {
+        return false;
+    }
+
+    let path = match unsafe { CStr::from_ptr(info.path) }.to_str() {
+        Ok(path) => path,
+        Err(error) => {
+            log::error!("Content path is not valid UTF-8: {error}");
+            return false;
+        }
+    };
+    update_diagnostic_audio_buffer_status(false);
+    unregister_async_audio();
+    crate::diagnostics::finish(unsafe { EMULATOR.as_ref() });
+    unsafe { EMULATOR = None };
+
+    if !set_pixel_format() {
+        log::error!("Frontend rejected the required RGB565 pixel format");
+        return false;
+    }
+    register_input_descriptors();
+    set_performance_level();
+
+    match Emulator::from_path(path) {
+        Ok(mut emulator) => {
+            let save_directory = frontend_directory(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY);
+            if let Some(save_directory) = save_directory.as_ref() {
+                emulator.set_save_directory(save_directory);
+            }
+            let diagnostic_directory = save_directory
+                .as_deref()
+                .or_else(|| std::path::Path::new(path).parent());
+            crate::diagnostics::configure(diagnostic_directory, path, OUTPUT_SAMPLE_RATE);
+            apply_core_options(&mut emulator);
+            emulator.start();
+            unsafe { EMULATOR = Some(emulator) };
+            register_async_audio();
+            if let Some(emulator) = unsafe { EMULATOR.as_mut() } {
+                register_memory_maps(emulator);
+            }
+            log::info!("Loaded content: {path}");
+            true
+        }
+        Err(error) => {
+            crate::diagnostics::finish(None);
+            log::error!("Failed to load content: {error}");
+            false
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn retro_load_game_special(
+    _game_type: c_uint,
+    _info: *const RetroGameInfo,
+    _num_info: usize,
+) -> bool {
+    false
+}
+
+#[no_mangle]
+pub extern "C" fn dingooemu_flush_save_files() -> c_uint {
+    unsafe { EMULATOR.as_mut() }
+        .map_or(1, |emulator| u32::from(emulator.flush_save_files_checked()))
+}
+
+#[no_mangle]
+pub extern "C" fn retro_unload_game() {
+    update_diagnostic_audio_buffer_status(false);
+    unregister_async_audio();
+    if let Some(emulator) = unsafe { EMULATOR.as_mut() } {
+        emulator.flush_save_files();
+        crate::diagnostics::finish(Some(emulator));
+    } else {
+        crate::diagnostics::finish(None);
+    }
+    unsafe { EMULATOR = None };
+}
+
+#[no_mangle]
+pub extern "C" fn retro_run() {
+    if core_options_changed() {
+        if let Some(emulator) = unsafe { EMULATOR.as_mut() } {
+            apply_core_options(emulator);
+        }
+    }
+    update_video_geometry();
+    let Some(emulator) = (unsafe { EMULATOR.as_mut() }) else {
+        return;
+    };
+
+    callbacks::input_poll();
+    let buttons =
+        query_joypad_buttons(|id| callbacks::input_state(0, RETRO_DEVICE_JOYPAD, 0, id) != 0);
+    emulator.set_buttons(buttons);
+
+    if !crate::frame_pacing::should_advance() {
+        submit_video_frame(emulator);
+        return;
+    }
+
+    let diagnostic_timer =
+        crate::diagnostics::frame_timer().or_else(crate::web_measurement::frame_timer);
+    if let Err(error) = emulator.tick() {
+        log::error!("Frame execution failed; requesting frontend shutdown: {error}");
+        callbacks::environment(RETRO_ENVIRONMENT_SHUTDOWN, ptr::null_mut());
+        return;
+    }
+
+    let exited = !emulator.is_running();
+
+    let Some(diagnostic_timer) = diagnostic_timer else {
+        submit_video_frame(emulator);
+
+        let samples = emulator.take_audio_samples();
+        if crate::audio_output::enqueue(&samples).is_none()
+            && callbacks::audio_sample_batch(samples.as_ptr(), samples.len() / 2).is_none()
+        {
+            for sample in samples.as_chunks::<2>().0.iter() {
+                callbacks::audio_sample(sample[0], sample[1]);
+            }
+        }
+        request_shutdown_if_exited(exited);
+        return;
+    };
+    let tick_elapsed = diagnostic_timer.elapsed();
+
+    let video_timer = Instant::now();
+    submit_video_frame(emulator);
+    let video_elapsed = video_timer.elapsed();
+
+    let audio_timer = Instant::now();
+    let samples = emulator.take_audio_samples();
+    let audio_frames_requested = samples.len() / 2;
+    let audio_frames_accepted = crate::audio_output::enqueue(&samples).unwrap_or_else(|| {
+        callbacks::audio_sample_batch(samples.as_ptr(), audio_frames_requested).map_or_else(
+            || {
+                for sample in samples.as_chunks::<2>().0.iter() {
+                    callbacks::audio_sample(sample[0], sample[1]);
+                }
+                audio_frames_requested
+            },
+            |accepted| accepted.min(audio_frames_requested),
+        )
+    });
+    let audio_elapsed = audio_timer.elapsed();
+    crate::web_measurement::record_frame(
+        diagnostic_timer,
+        tick_elapsed,
+        video_elapsed,
+        audio_elapsed,
+    );
+    crate::diagnostics::record_frame(
+        emulator,
+        tick_elapsed,
+        diagnostic_timer.elapsed(),
+        video_elapsed,
+        audio_elapsed,
+        audio_frames_requested,
+        audio_frames_accepted,
+    );
+    request_shutdown_if_exited(exited);
+}
+
+fn screen_orientation() -> ScreenOrientation {
+    if PORTRAIT_MODE.load(Ordering::Acquire) {
+        ScreenOrientation::Portrait
+    } else {
+        ScreenOrientation::Landscape
+    }
+}
+
+fn video_geometry(orientation: ScreenOrientation) -> RetroGameGeometry {
+    let (base_width, base_height) = orientation.dimensions();
+    let max_dimension = SCREEN_WIDTH.max(SCREEN_HEIGHT);
+    RetroGameGeometry {
+        base_width,
+        base_height,
+        max_width: max_dimension,
+        max_height: max_dimension,
+        aspect_ratio: base_width as f32 / base_height as f32,
+    }
+}
+
+fn set_screen_orientation(orientation: ScreenOrientation) {
+    let portrait = orientation == ScreenOrientation::Portrait;
+    if PORTRAIT_MODE.swap(portrait, Ordering::AcqRel) != portrait {
+        VIDEO_GEOMETRY_DIRTY.store(true, Ordering::Release);
+    }
+}
+
+fn update_video_geometry() {
+    if !VIDEO_GEOMETRY_DIRTY.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let mut geometry = video_geometry(screen_orientation());
+    if !callbacks::environment(
+        RETRO_ENVIRONMENT_SET_GEOMETRY,
+        (&mut geometry as *mut RetroGameGeometry).cast(),
+    ) {
+        log::warn!("Frontend did not accept updated video geometry");
+    }
+}
+
+fn submit_video_frame(emulator: &Emulator) {
+    match screen_orientation() {
+        ScreenOrientation::Landscape => callbacks::video_refresh(
+            emulator.framebuffer().as_ptr().cast(),
+            SCREEN_WIDTH,
+            SCREEN_HEIGHT,
+            SCREEN_WIDTH as usize * std::mem::size_of::<u16>(),
+        ),
+        ScreenOrientation::Portrait => {
+            let mut framebuffer = PORTRAIT_FRAMEBUFFER
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            rotate_rgb565_counterclockwise(emulator.framebuffer(), &mut *framebuffer);
+            callbacks::video_refresh(
+                framebuffer.as_ptr().cast(),
+                SCREEN_HEIGHT,
+                SCREEN_WIDTH,
+                SCREEN_HEIGHT as usize * std::mem::size_of::<u16>(),
+            );
+        }
+    }
+}
+
+fn request_shutdown_if_exited(exited: bool) {
+    if exited {
+        log::info!("Content exited normally; requesting frontend shutdown");
+        callbacks::environment(RETRO_ENVIRONMENT_SHUTDOWN, ptr::null_mut());
+    }
+}
+
+fn update_diagnostic_audio_buffer_status(enabled: bool) {
+    let registered = DIAGNOSTIC_AUDIO_BUFFER_REGISTERED.load(Ordering::Acquire);
+    if enabled == registered {
+        return;
+    }
+
+    let mut callback = RetroAudioBufferStatusCallback {
+        callback: enabled.then_some(frontend_audio_buffer_status),
+    };
+    let accepted = callbacks::environment(
+        RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK,
+        (&mut callback as *mut RetroAudioBufferStatusCallback).cast(),
+    );
+    let active = enabled && accepted;
+    DIAGNOSTIC_AUDIO_BUFFER_REGISTERED.store(active, Ordering::Release);
+    if enabled {
+        crate::diagnostics::set_audio_buffer_status_callback_status(accepted);
+    }
+}
+
+unsafe extern "C" fn frontend_audio_buffer_status(
+    active: bool,
+    occupancy: c_uint,
+    underrun_likely: bool,
+) {
+    crate::diagnostics::record_audio_buffer_status(active, occupancy, underrun_likely);
+}
+
+fn register_async_audio() {
+    crate::frame_pacing::reset();
+    crate::audio_output::reset(true);
+    let mut audio_callback = RetroAudioCallback {
+        callback: Some(crate::audio_output::callback),
+        set_state: Some(frontend_async_audio_set_state),
+    };
+    let supported = callbacks::environment(
+        RETRO_ENVIRONMENT_SET_AUDIO_CALLBACK,
+        (&mut audio_callback as *mut RetroAudioCallback).cast(),
+    );
+    ASYNC_AUDIO_REGISTERED.store(supported, Ordering::Release);
+    if !supported {
+        crate::audio_output::reset(false);
+    }
+    crate::diagnostics::set_async_audio_callback_status(supported);
+
+    if supported {
+        let mut frame_time_callback = RetroFrameTimeCallback {
+            callback: Some(frontend_frame_time),
+            reference: (1_000_000.0 / FRAMES_PER_SECOND) as i64,
+        };
+        let timing_supported = callbacks::environment(
+            RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK,
+            (&mut frame_time_callback as *mut RetroFrameTimeCallback).cast(),
+        );
+        if !timing_supported {
+            unregister_async_audio();
+            crate::diagnostics::set_async_audio_callback_status(false);
+            log::debug!("Frontend lacks frame timing; using synchronous audio");
+            return;
+        }
+        log::info!("Frontend asynchronous audio callback enabled");
+    } else {
+        log::debug!("Frontend does not support asynchronous audio callbacks");
+    }
+}
+
+fn unregister_async_audio() {
+    if ASYNC_AUDIO_REGISTERED.swap(false, Ordering::AcqRel) {
+        let mut audio_callback = RetroAudioCallback {
+            callback: None,
+            set_state: None,
+        };
+        callbacks::environment(
+            RETRO_ENVIRONMENT_SET_AUDIO_CALLBACK,
+            (&mut audio_callback as *mut RetroAudioCallback).cast(),
+        );
+        let mut frame_time_callback = RetroFrameTimeCallback {
+            callback: None,
+            reference: 0,
+        };
+        callbacks::environment(
+            RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK,
+            (&mut frame_time_callback as *mut RetroFrameTimeCallback).cast(),
+        );
+        crate::diagnostics::record_async_audio_state(false);
+    }
+    crate::audio_output::reset(false);
+    crate::frame_pacing::reset();
+}
+
+unsafe extern "C" fn frontend_async_audio_set_state(enabled: bool) {
+    crate::audio_output::set_enabled(enabled);
+    crate::frame_pacing::reset();
+}
+
+unsafe extern "C" fn frontend_frame_time(usec: i64) {
+    if ASYNC_AUDIO_REGISTERED.load(Ordering::Acquire) {
+        crate::frame_pacing::set_elapsed(usec);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn retro_reset() {
+    let Some(emulator) = (unsafe { EMULATOR.as_mut() }) else {
+        return;
+    };
+    if let Err(error) = emulator.reset() {
+        log::error!("Reset failed: {error}");
+    } else {
+        crate::frame_pacing::reset();
+        apply_core_options(emulator);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn retro_serialize_size() -> usize {
+    unsafe { EMULATOR.as_ref() }.map_or(0, Emulator::serialized_state_size)
+}
+
+#[no_mangle]
+pub extern "C" fn retro_serialize(data: *mut c_void, size: usize) -> bool {
+    let Some(emulator) = (unsafe { EMULATOR.as_ref() }) else {
+        return false;
+    };
+    if data.is_null() || size < emulator.serialized_state_size() {
+        return false;
+    }
+    let output = unsafe { std::slice::from_raw_parts_mut(data.cast::<u8>(), size) };
+    match emulator.serialize_state(output) {
+        Ok(()) => true,
+        Err(error) => {
+            log::error!("Failed to serialize state: {error}");
+            false
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn retro_unserialize(data: *const c_void, size: usize) -> bool {
+    let Some(emulator) = (unsafe { EMULATOR.as_mut() }) else {
+        return false;
+    };
+    if data.is_null() || size < 32 {
+        return false;
+    }
+    let input = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) };
+    match emulator.unserialize_state(input) {
+        Ok(()) => {
+            crate::frame_pacing::reset();
+            apply_core_options(emulator);
+            true
+        }
+        Err(error) => {
+            log::error!("Failed to unserialize state: {error}");
+            false
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn retro_cheat_reset() {
+    if let Some(emulator) = unsafe { EMULATOR.as_mut() } {
+        emulator.clear_cheats();
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dingooemu_state_present() {
+    if let Some(emulator) = unsafe { EMULATOR.as_ref() } {
+        submit_video_frame(emulator);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn retro_cheat_set(index: c_uint, enabled: bool, code: *const c_char) {
+    let Some(emulator) = (unsafe { EMULATOR.as_mut() }) else {
+        return;
+    };
+    if code.is_null() {
+        log::warn!("Ignored null cheat code for slot {index}");
+        return;
+    }
+    let code = unsafe { CStr::from_ptr(code) }.to_string_lossy();
+    if let Err(error) = emulator.set_cheat(index, enabled, &code) {
+        log::warn!("Rejected cheat slot {index}: {error}");
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn retro_get_memory_data(id: c_uint) -> *mut c_void {
+    let Some(emulator) = (unsafe { EMULATOR.as_mut() }) else {
+        return ptr::null_mut();
+    };
+    match id & RETRO_MEMORY_MASK {
+        RETRO_MEMORY_SYSTEM_RAM => emulator.system_ram_mut().as_mut_ptr().cast(),
+        RETRO_MEMORY_VIDEO_RAM => emulator.video_ram_mut().as_mut_ptr().cast(),
+        _ => ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn retro_get_memory_size(id: c_uint) -> usize {
+    let Some(emulator) = (unsafe { EMULATOR.as_ref() }) else {
+        return 0;
+    };
+    match id & RETRO_MEMORY_MASK {
+        RETRO_MEMORY_SYSTEM_RAM => emulator.system_ram().len(),
+        RETRO_MEMORY_VIDEO_RAM => emulator.video_ram().len(),
+        _ => 0,
+    }
+}
+
+fn set_pixel_format() -> bool {
+    let mut format = RETRO_PIXEL_FORMAT_RGB565;
+    callbacks::environment(
+        RETRO_ENVIRONMENT_SET_PIXEL_FORMAT,
+        (&mut format as *mut u32).cast(),
+    )
+}
+
+fn frontend_directory(command: u32) -> Option<std::path::PathBuf> {
+    let mut value: *const c_char = ptr::null();
+    if !callbacks::environment(command, (&mut value as *mut *const c_char).cast())
+        || value.is_null()
+    {
+        return None;
+    }
+    let path = unsafe { CStr::from_ptr(value) }.to_string_lossy();
+    (!path.is_empty()).then(|| std::path::PathBuf::from(path.as_ref()))
+}
+
+fn register_memory_maps(emulator: &mut Emulator) {
+    let system_ram_len = emulator.system_ram().len();
+    let video_ram_len = emulator.video_ram().len();
+    let system_ram_start = emulator.system_ram_guest_address() as usize;
+    let video_ram_start = emulator.video_ram_guest_address() as usize;
+    let descriptors = [
+        RetroMemoryDescriptor {
+            flags: RETRO_MEMDESC_SYSTEM_RAM,
+            ptr: emulator.system_ram_mut().as_mut_ptr().cast(),
+            offset: 0,
+            start: system_ram_start,
+            select: 0,
+            disconnect: 0,
+            len: system_ram_len,
+            addrspace: c"Dingoo".as_ptr(),
+        },
+        RetroMemoryDescriptor {
+            flags: RETRO_MEMDESC_VIDEO_RAM,
+            ptr: emulator.video_ram_mut().as_mut_ptr().cast(),
+            offset: 0,
+            start: video_ram_start,
+            select: 0,
+            disconnect: 0,
+            len: video_ram_len,
+            addrspace: c"Dingoo".as_ptr(),
+        },
+    ];
+    let memory_map = RetroMemoryMap {
+        descriptors: descriptors.as_ptr(),
+        num_descriptors: descriptors.len() as u32,
+    };
+    if !callbacks::environment(
+        RETRO_ENVIRONMENT_SET_MEMORY_MAPS,
+        (&memory_map as *const RetroMemoryMap).cast_mut().cast(),
+    ) {
+        log::warn!("Frontend did not accept memory descriptors");
+    }
+}
+
+fn set_performance_level() {
+    let mut level = PERFORMANCE_LEVEL;
+    callbacks::environment(
+        RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL,
+        (&mut level as *mut u32).cast(),
+    );
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CoreOptions {
+    volume: u8,
+    repeat_delay: u32,
+    repeat_period: u32,
+    swap_ab: bool,
+    diagnostics_enabled: bool,
+    unknown_instruction_policy: UnknownInstructionPolicy,
+    orientation: ScreenOrientation,
+    jit_enabled: bool,
+}
+
+impl Default for CoreOptions {
+    fn default() -> Self {
+        Self {
+            volume: 100,
+            repeat_delay: 24,
+            repeat_period: 6,
+            swap_ab: false,
+            diagnostics_enabled: false,
+            unknown_instruction_policy: UnknownInstructionPolicy::Skip,
+            orientation: ScreenOrientation::Landscape,
+            jit_enabled: true,
+        }
+    }
+}
+
+fn core_option_variables() -> Vec<RetroVariable> {
+    let mut variables = vec![
+        RetroVariable {
+            key: c"dingooemu_volume".as_ptr(),
+            value: c"Audio Volume (%); 100|90|80|70|60|50|40|30|20|10|0".as_ptr(),
+        },
+        RetroVariable {
+            key: c"dingooemu_repeat_delay".as_ptr(),
+            value: c"Key Auto-Repeat Delay (frames); 24|0|2|4|6|8|10|12|16|20|30|45|60".as_ptr(),
+        },
+        RetroVariable {
+            key: c"dingooemu_repeat_period".as_ptr(),
+            value: c"Key Auto-Repeat Period (frames); 6|1|2|3|4|5|8|10|12|15|20|30".as_ptr(),
+        },
+        RetroVariable {
+            key: c"dingooemu_swap_ab".as_ptr(),
+            value: c"Swap A/B Buttons; disabled|enabled".as_ptr(),
+        },
+        RetroVariable {
+            key: c"dingooemu_debug_logging".as_ptr(),
+            value: c"Performance Diagnostic Log; disabled|enabled".as_ptr(),
+        },
+        RetroVariable {
+            key: c"dingooemu_unknown_instruction".as_ptr(),
+            value: c"Unknown Guest Instruction Policy; skip|stop".as_ptr(),
+        },
+        RetroVariable {
+            key: c"dingooemu_screen_orientation".as_ptr(),
+            value: c"Screen Orientation; landscape|portrait".as_ptr(),
+        },
+    ];
+    #[cfg(all(
+        target_pointer_width = "64",
+        any(target_arch = "aarch64", target_arch = "x86_64"),
+        any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "android"
+        )
+    ))]
+    variables.push(RetroVariable {
+        key: c"dingooemu_cpu_engine".as_ptr(),
+        value: c"CPU Execution Engine; jit|interpreter".as_ptr(),
+    });
+    variables.push(RetroVariable {
+        key: ptr::null(),
+        value: ptr::null(),
+    });
+    variables
+}
+
+fn set_core_options() {
+    let variables = core_option_variables();
+    callbacks::environment(
+        RETRO_ENVIRONMENT_SET_VARIABLES,
+        variables.as_ptr().cast_mut().cast(),
+    );
+}
+
+fn get_core_option(key: &CStr) -> Option<String> {
+    let mut variable = RetroVariable {
+        key: key.as_ptr(),
+        value: ptr::null(),
+    };
+    let success = callbacks::environment(
+        RETRO_ENVIRONMENT_GET_VARIABLE,
+        (&mut variable as *mut RetroVariable).cast(),
+    );
+    if success && !variable.value.is_null() {
+        unsafe {
+            CStr::from_ptr(variable.value)
+                .to_str()
+                .ok()
+                .map(str::to_owned)
+        }
+    } else {
+        None
+    }
+}
+
+fn core_options_changed() -> bool {
+    let mut updated = false;
+    callbacks::environment(
+        RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE,
+        (&mut updated as *mut bool).cast(),
+    ) && updated
+}
+
+fn read_core_options(mut get: impl FnMut(&CStr) -> Option<String>) -> CoreOptions {
+    let mut options = CoreOptions::default();
+    if let Some(volume) = get(c"dingooemu_volume").and_then(|value| value.parse::<u8>().ok()) {
+        options.volume = volume.min(100);
+    }
+    if let Some(delay) = get(c"dingooemu_repeat_delay").and_then(|value| value.parse::<u32>().ok())
+    {
+        options.repeat_delay = delay;
+    }
+    if let Some(period) =
+        get(c"dingooemu_repeat_period").and_then(|value| value.parse::<u32>().ok())
+    {
+        options.repeat_period = period.max(1);
+    }
+    if let Some(swap) = get(c"dingooemu_swap_ab") {
+        options.swap_ab = swap == "enabled";
+    }
+    if let Some(debug) = get(c"dingooemu_debug_logging") {
+        options.diagnostics_enabled = debug == "enabled";
+    }
+    if let Some(policy) = get(c"dingooemu_unknown_instruction") {
+        options.unknown_instruction_policy = if policy == "stop" {
+            UnknownInstructionPolicy::Stop
+        } else {
+            UnknownInstructionPolicy::Skip
+        };
+    }
+    if let Some(orientation) = get(c"dingooemu_screen_orientation") {
+        options.orientation = if orientation == "portrait" {
+            ScreenOrientation::Portrait
+        } else {
+            ScreenOrientation::Landscape
+        };
+    }
+    if let Some(engine) = get(c"dingooemu_cpu_engine") {
+        options.jit_enabled = engine != "interpreter";
+    }
+    options
+}
+
+fn apply_core_options(emulator: &mut Emulator) {
+    let options = read_core_options(get_core_option);
+    emulator.set_master_volume(options.volume);
+    emulator.set_input_repeat_timing(options.repeat_delay, options.repeat_period);
+    emulator.set_swap_ab(options.swap_ab);
+    // Keep performance diagnostics independent of verbose frontend logging.
+    crate::logger::set_debug_logging(false);
+    emulator.set_unknown_instruction_policy(options.unknown_instruction_policy);
+    set_screen_orientation(options.orientation);
+    emulator.set_jit_enabled(options.jit_enabled);
+    emulator.set_jit_diagnostics_enabled(options.diagnostics_enabled);
+    crate::diagnostics::set_enabled(options.diagnostics_enabled, emulator);
+    update_diagnostic_audio_buffer_status(crate::diagnostics::is_enabled());
+    log::info!(
+        "Core options applied: volume={} repeat_delay={} repeat_period={} swap_ab={} diagnostics={} unknown_instruction={:?} orientation={:?} cpu_engine={}",
+        options.volume,
+        options.repeat_delay,
+        options.repeat_period,
+        options.swap_ab,
+        options.diagnostics_enabled,
+        options.unknown_instruction_policy,
+        options.orientation,
+        if options.jit_enabled { "jit" } else { "interpreter" }
+    );
+}
+
+fn input_descriptors() -> [RetroInputDescriptor; 13] {
+    let descriptor = |id, description: &'static CStr| RetroInputDescriptor {
+        port: 0,
+        device: RETRO_DEVICE_JOYPAD,
+        index: 0,
+        id,
+        description: description.as_ptr(),
+    };
+
+    [
+        descriptor(RETRO_DEVICE_ID_JOYPAD_UP, c"D-Pad Up"),
+        descriptor(RETRO_DEVICE_ID_JOYPAD_DOWN, c"D-Pad Down"),
+        descriptor(RETRO_DEVICE_ID_JOYPAD_LEFT, c"D-Pad Left"),
+        descriptor(RETRO_DEVICE_ID_JOYPAD_RIGHT, c"D-Pad Right"),
+        descriptor(RETRO_DEVICE_ID_JOYPAD_A, c"A"),
+        descriptor(RETRO_DEVICE_ID_JOYPAD_B, c"B"),
+        descriptor(RETRO_DEVICE_ID_JOYPAD_X, c"X"),
+        descriptor(RETRO_DEVICE_ID_JOYPAD_Y, c"Y"),
+        descriptor(RETRO_DEVICE_ID_JOYPAD_START, c"Start"),
+        descriptor(RETRO_DEVICE_ID_JOYPAD_SELECT, c"Select"),
+        descriptor(RETRO_DEVICE_ID_JOYPAD_L, c"L"),
+        descriptor(RETRO_DEVICE_ID_JOYPAD_R, c"R"),
+        RetroInputDescriptor {
+            port: 0,
+            device: 0,
+            index: 0,
+            id: 0,
+            description: ptr::null(),
+        },
+    ]
+}
+
+fn register_input_descriptors() {
+    let descriptors = input_descriptors();
+    callbacks::environment(
+        RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS,
+        descriptors.as_ptr().cast_mut().cast(),
+    );
+}
+
+fn query_joypad_buttons(mut pressed: impl FnMut(u32) -> bool) -> u32 {
+    const BUTTON_MAP: [(u32, u32); 12] = [
+        (RETRO_DEVICE_ID_JOYPAD_UP, BUTTON_UP),
+        (RETRO_DEVICE_ID_JOYPAD_DOWN, BUTTON_DOWN),
+        (RETRO_DEVICE_ID_JOYPAD_LEFT, BUTTON_LEFT),
+        (RETRO_DEVICE_ID_JOYPAD_RIGHT, BUTTON_RIGHT),
+        (RETRO_DEVICE_ID_JOYPAD_A, BUTTON_A),
+        (RETRO_DEVICE_ID_JOYPAD_B, BUTTON_B),
+        (RETRO_DEVICE_ID_JOYPAD_X, BUTTON_X),
+        (RETRO_DEVICE_ID_JOYPAD_Y, BUTTON_Y),
+        (RETRO_DEVICE_ID_JOYPAD_START, BUTTON_START),
+        (RETRO_DEVICE_ID_JOYPAD_SELECT, BUTTON_SELECT),
+        (RETRO_DEVICE_ID_JOYPAD_L, BUTTON_L),
+        (RETRO_DEVICE_ID_JOYPAD_R, BUTTON_R),
+    ];
+
+    BUTTON_MAP.iter().fold(0, |buttons, (id, mask)| {
+        if pressed(*id) {
+            buttons | mask
+        } else {
+            buttons
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::{CStr, CString};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    use super::*;
+
+    const TEST_MINIMUM_AUDIO_LATENCY_COMMAND: u32 = 63;
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    static PIXEL_FORMAT: AtomicU32 = AtomicU32::new(u32::MAX);
+    static INPUT_DESCRIPTORS_SET: AtomicBool = AtomicBool::new(false);
+    static INPUT_POLLED: AtomicBool = AtomicBool::new(false);
+    static VIDEO_WIDTH: AtomicU32 = AtomicU32::new(0);
+    static VIDEO_NON_SOLID: AtomicBool = AtomicBool::new(false);
+    static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+    static AUDIO_BATCH_CALLED: AtomicBool = AtomicBool::new(false);
+    static AUDIO_BUFFER_STATUS_REGISTERED: AtomicBool = AtomicBool::new(false);
+    static ASYNC_AUDIO_CALLBACK: Mutex<RetroAudioCallbackFn> = Mutex::new(None);
+    static FRAME_TIME_CALLBACK: Mutex<RetroFrameTimeCallbackFn> = Mutex::new(None);
+    static AUDIO_LATENCY_REQUESTED: AtomicBool = AtomicBool::new(false);
+    static MEMORY_MAPS_SET: AtomicBool = AtomicBool::new(false);
+    static SYSTEM_RAM_MAP_START: AtomicUsize = AtomicUsize::new(usize::MAX);
+    static VIDEO_RAM_MAP_START: AtomicUsize = AtomicUsize::new(usize::MAX);
+    static SAVE_DIRECTORY: Mutex<Option<CString>> = Mutex::new(None);
+
+    unsafe extern "C" fn test_environment(command: u32, data: *mut c_void) -> bool {
+        match command {
+            RETRO_ENVIRONMENT_SET_PIXEL_FORMAT => {
+                PIXEL_FORMAT.store(*(data.cast::<u32>()), Ordering::SeqCst);
+                true
+            }
+            RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS => {
+                let descriptors = data.cast::<RetroInputDescriptor>();
+                INPUT_DESCRIPTORS_SET
+                    .store(!(*descriptors).description.is_null(), Ordering::SeqCst);
+                true
+            }
+            RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL => true,
+            RETRO_ENVIRONMENT_SHUTDOWN => {
+                SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+                true
+            }
+            RETRO_ENVIRONMENT_SET_AUDIO_CALLBACK => {
+                let audio = &*data.cast::<RetroAudioCallback>();
+                *ASYNC_AUDIO_CALLBACK.lock().unwrap() = audio.callback;
+                if let Some(set_state) = audio.set_state {
+                    set_state(true);
+                }
+                true
+            }
+            RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK => {
+                *FRAME_TIME_CALLBACK.lock().unwrap() =
+                    (*data.cast::<RetroFrameTimeCallback>()).callback;
+                true
+            }
+            RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK => {
+                let status = &*data.cast::<RetroAudioBufferStatusCallback>();
+                AUDIO_BUFFER_STATUS_REGISTERED.store(status.callback.is_some(), Ordering::SeqCst);
+                if let Some(callback) = status.callback {
+                    callback(true, 75, false);
+                }
+                true
+            }
+            TEST_MINIMUM_AUDIO_LATENCY_COMMAND => {
+                AUDIO_LATENCY_REQUESTED.store(true, Ordering::SeqCst);
+                true
+            }
+            RETRO_ENVIRONMENT_SET_MEMORY_MAPS => {
+                let memory_map = &*data.cast::<RetroMemoryMap>();
+                let valid = memory_map.num_descriptors == 2 && !memory_map.descriptors.is_null();
+                MEMORY_MAPS_SET.store(valid, Ordering::SeqCst);
+                if valid {
+                    let descriptors = std::slice::from_raw_parts(memory_map.descriptors, 2);
+                    SYSTEM_RAM_MAP_START.store(descriptors[0].start, Ordering::SeqCst);
+                    VIDEO_RAM_MAP_START.store(descriptors[1].start, Ordering::SeqCst);
+                }
+                true
+            }
+            RETRO_ENVIRONMENT_SET_VARIABLES => true,
+            RETRO_ENVIRONMENT_GET_VARIABLE => {
+                // Frontend-lifecycle tests exercise the libretro glue, not the
+                // translator: running them on the interpreter keeps them fast
+                // enough for coverage instrumentation. JIT correctness stays
+                // covered by the dingooemu-core suite.
+                let variable = &mut *data.cast::<RetroVariable>();
+                if !variable.key.is_null() {
+                    let key = std::ffi::CStr::from_ptr(variable.key);
+                    if key == c"dingooemu_cpu_engine" {
+                        variable.value = c"interpreter".as_ptr();
+                        return true;
+                    }
+                }
+                false
+            }
+            RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE => false,
+            RETRO_ENVIRONMENT_GET_LOG_INTERFACE => false,
+            RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY => {
+                let directory = SAVE_DIRECTORY.lock().unwrap();
+                let Some(directory) = directory.as_ref() else {
+                    return false;
+                };
+                *data.cast::<*const c_char>() = directory.as_ptr();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    unsafe extern "C" fn test_video_refresh(
+        data: *const c_void,
+        width: u32,
+        height: u32,
+        pitch: usize,
+    ) {
+        assert_eq!(height, SCREEN_HEIGHT);
+        assert_eq!(pitch, SCREEN_WIDTH as usize * std::mem::size_of::<u16>());
+        VIDEO_WIDTH.store(width, Ordering::SeqCst);
+        if !data.is_null() {
+            let pixels =
+                std::slice::from_raw_parts(data.cast::<u16>(), width as usize * height as usize);
+            VIDEO_NON_SOLID.store(
+                pixels
+                    .first()
+                    .is_some_and(|first| pixels.iter().any(|pixel| pixel != first)),
+                Ordering::SeqCst,
+            );
+        }
+    }
+
+    unsafe extern "C" fn test_audio_batch(_data: *const i16, _frames: usize) -> usize {
+        AUDIO_BATCH_CALLED.store(true, Ordering::SeqCst);
+        0
+    }
+
+    unsafe extern "C" fn test_input_poll() {
+        INPUT_POLLED.store(true, Ordering::SeqCst);
+    }
+
+    unsafe extern "C" fn test_input_state(port: u32, device: u32, index: u32, id: u32) -> i16 {
+        assert_eq!((port, device, index), (0, RETRO_DEVICE_JOYPAD, 0));
+        i16::from(matches!(
+            id,
+            RETRO_DEVICE_ID_JOYPAD_A | RETRO_DEVICE_ID_JOYPAD_START
+        ))
+    }
+
+    #[test]
+    fn advertises_every_supported_content_extension() {
+        let mut info = std::mem::MaybeUninit::<RetroSystemInfo>::zeroed();
+        retro_get_system_info(info.as_mut_ptr());
+        let info = unsafe { info.assume_init() };
+        let extensions = unsafe { CStr::from_ptr(info.valid_extensions) };
+
+        assert_eq!(extensions.to_str().unwrap(), "app|cc|c2s|c3s");
+        assert!(info.need_fullpath);
+    }
+
+    fn minimal_app_bytes() -> Vec<u8> {
+        let mut data = vec![0u8; 132];
+        data[0..4].copy_from_slice(b"CCDL");
+        data[0x20..0x24].copy_from_slice(b"IMPT");
+        data[0x40..0x44].copy_from_slice(b"EXPT");
+        data[0x60..0x64].copy_from_slice(b"RAWD");
+        data[0x68..0x6c].copy_from_slice(&128u32.to_le_bytes());
+        data[0x6c..0x70].copy_from_slice(&4u32.to_le_bytes());
+        data[0x74..0x78].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+        data[0x78..0x7c].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+        data[0x7c..0x80].copy_from_slice(&4u32.to_le_bytes());
+        data
+    }
+
+    fn minimal_arm_bytes(origin: u32) -> Vec<u8> {
+        let mut data = minimal_app_bytes();
+        data[0x74..0x78].copy_from_slice(&origin.to_le_bytes());
+        data[0x78..0x7c].copy_from_slice(&origin.to_le_bytes());
+        data[0x80..0x84].copy_from_slice(&0xeaff_fffeu32.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn asynchronous_frontend_refresh_rate_does_not_change_guest_speed() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let path =
+            std::env::temp_dir().join(format!("dingooemu-pacing-test-{}.app", std::process::id()));
+        let mut content = minimal_app_bytes();
+        content[128..132].copy_from_slice(&0x0800_0000u32.to_le_bytes());
+        std::fs::write(&path, content).unwrap();
+        let path_string = CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        let info = RetroGameInfo {
+            path: path_string.as_ptr(),
+            data: ptr::null(),
+            size: 0,
+            meta: ptr::null(),
+        };
+        retro_set_environment(Some(test_environment));
+        retro_set_video_refresh(Some(test_video_refresh));
+        retro_set_input_poll(Some(test_input_poll));
+        retro_set_input_state(None);
+        retro_init();
+
+        let mut frame_counts = Vec::new();
+        // Two end-to-end samples are enough here (1:1 and a high refresh
+        // rate); frame_pacing's unit tests cover the intermediate rates.
+        for hz in [60, 144] {
+            assert!(retro_load_game(&info));
+            let callback = FRAME_TIME_CALLBACK.lock().unwrap().unwrap();
+            for frame in 0..hz {
+                let elapsed_us = (frame + 1) * 1_000_000 / hz - frame * 1_000_000 / hz;
+                unsafe { callback(elapsed_us) };
+                retro_run();
+            }
+            frame_counts.push(unsafe { EMULATOR.as_ref().unwrap().frame_count() });
+            unsafe { callback(8_333) };
+            retro_run();
+            retro_reset();
+            unsafe { callback(8_333) };
+            retro_run();
+            assert_eq!(unsafe { EMULATOR.as_ref().unwrap().frame_count() }, 0);
+            unsafe { callback(8_334) };
+            retro_run();
+            assert_eq!(unsafe { EMULATOR.as_ref().unwrap().frame_count() }, 1);
+            retro_unload_game();
+            assert!(FRAME_TIME_CALLBACK.lock().unwrap().is_none());
+        }
+        retro_deinit();
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(frame_counts, [60, 60]);
+    }
+
+    #[test]
+    fn asynchronous_audio_requires_frontend_frame_timing() {
+        unsafe extern "C" fn no_frame_timing(command: u32, data: *mut c_void) -> bool {
+            command != RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK && test_environment(command, data)
+        }
+
+        let _guard = TEST_LOCK.lock().unwrap();
+        retro_set_environment(Some(no_frame_timing));
+        register_async_audio();
+        assert!(!ASYNC_AUDIO_REGISTERED.load(Ordering::Acquire));
+        assert!(ASYNC_AUDIO_CALLBACK.lock().unwrap().is_none());
+        assert!(crate::audio_output::enqueue(&[0, 0]).is_none());
+        unsafe { frontend_frame_time(8_333) };
+        assert!(crate::frame_pacing::should_advance());
+        unregister_async_audio();
+    }
+
+    #[test]
+    fn maps_retropad_buttons_to_dingoo_masks() {
+        let buttons = query_joypad_buttons(|id| {
+            matches!(
+                id,
+                RETRO_DEVICE_ID_JOYPAD_UP
+                    | RETRO_DEVICE_ID_JOYPAD_A
+                    | RETRO_DEVICE_ID_JOYPAD_START
+                    | RETRO_DEVICE_ID_JOYPAD_R
+            )
+        });
+
+        assert_eq!(buttons, BUTTON_UP | BUTTON_A | BUTTON_START | BUTTON_R);
+    }
+
+    #[test]
+    fn terminates_input_descriptor_array() {
+        let descriptors = input_descriptors();
+        assert_eq!(descriptors.len(), 13);
+        assert!(descriptors[..12]
+            .iter()
+            .all(|descriptor| !descriptor.description.is_null()));
+        assert!(descriptors[12].description.is_null());
+    }
+
+    #[test]
+    fn volume_core_option_has_stable_key_and_default() {
+        let variables = core_option_variables();
+        assert_eq!(
+            unsafe { CStr::from_ptr(variables[0].key) },
+            c"dingooemu_volume"
+        );
+        assert!(unsafe { CStr::from_ptr(variables[0].value) }
+            .to_str()
+            .unwrap()
+            .ends_with("; 100|90|80|70|60|50|40|30|20|10|0"));
+        assert!(variables.last().unwrap().key.is_null());
+
+        let options =
+            read_core_options(|key| (key == c"dingooemu_volume").then(|| "30".to_string()));
+        assert_eq!(options.volume, 30);
+    }
+
+    #[test]
+    fn repeat_delay_option_supports_live_typematic_control() {
+        let variables = core_option_variables();
+        assert_eq!(
+            unsafe { CStr::from_ptr(variables[1].key) },
+            c"dingooemu_repeat_delay"
+        );
+        let options =
+            read_core_options(|key| (key == c"dingooemu_repeat_delay").then(|| "12".to_string()));
+        assert_eq!(options.repeat_delay, 12);
+    }
+
+    #[test]
+    fn repeat_period_option_rejects_zero_semantically() {
+        let variables = core_option_variables();
+        assert_eq!(
+            unsafe { CStr::from_ptr(variables[2].key) },
+            c"dingooemu_repeat_period"
+        );
+        let options =
+            read_core_options(|key| (key == c"dingooemu_repeat_period").then(|| "0".to_string()));
+        assert_eq!(options.repeat_period, 1);
+    }
+
+    #[test]
+    fn swap_ab_option_defaults_to_disabled() {
+        let variables = core_option_variables();
+        assert_eq!(
+            unsafe { CStr::from_ptr(variables[3].key) },
+            c"dingooemu_swap_ab"
+        );
+        assert!(!read_core_options(|_| None).swap_ab);
+        assert!(
+            read_core_options(|key| {
+                (key == c"dingooemu_swap_ab").then(|| "enabled".to_string())
+            })
+            .swap_ab
+        );
+    }
+
+    #[test]
+    fn performance_diagnostics_option_defaults_to_disabled() {
+        let variables = core_option_variables();
+        assert_eq!(
+            unsafe { CStr::from_ptr(variables[4].key) },
+            c"dingooemu_debug_logging"
+        );
+        assert!(unsafe { CStr::from_ptr(variables[4].value) }
+            .to_str()
+            .unwrap()
+            .starts_with("Performance Diagnostic Log; disabled"));
+        assert!(!read_core_options(|_| None).diagnostics_enabled);
+        assert!(
+            read_core_options(|key| {
+                (key == c"dingooemu_debug_logging").then(|| "enabled".to_string())
+            })
+            .diagnostics_enabled
+        );
+    }
+
+    #[test]
+    fn unknown_instruction_option_preserves_skip_default() {
+        let variables = core_option_variables();
+        assert_eq!(
+            unsafe { CStr::from_ptr(variables[5].key) },
+            c"dingooemu_unknown_instruction"
+        );
+        assert_eq!(
+            read_core_options(|_| None).unknown_instruction_policy,
+            UnknownInstructionPolicy::Skip
+        );
+        assert_eq!(
+            read_core_options(|key| {
+                (key == c"dingooemu_unknown_instruction").then(|| "stop".to_string())
+            })
+            .unknown_instruction_policy,
+            UnknownInstructionPolicy::Stop
+        );
+    }
+
+    #[test]
+    fn screen_orientation_option_updates_portrait_geometry() {
+        let variables = core_option_variables();
+        assert_eq!(
+            unsafe { CStr::from_ptr(variables[6].key) },
+            c"dingooemu_screen_orientation"
+        );
+        assert_eq!(
+            read_core_options(|_| None).orientation,
+            ScreenOrientation::Landscape
+        );
+        assert_eq!(
+            read_core_options(|key| {
+                (key == c"dingooemu_screen_orientation").then(|| "portrait".to_string())
+            })
+            .orientation,
+            ScreenOrientation::Portrait
+        );
+
+        let landscape = video_geometry(ScreenOrientation::Landscape);
+        assert_eq!((landscape.base_width, landscape.base_height), (320, 240));
+        assert_eq!((landscape.max_width, landscape.max_height), (320, 320));
+        let portrait = video_geometry(ScreenOrientation::Portrait);
+        assert_eq!((portrait.base_width, portrait.base_height), (240, 320));
+        assert_eq!(portrait.aspect_ratio, 0.75);
+    }
+
+    #[test]
+    #[cfg(all(
+        target_pointer_width = "64",
+        any(target_arch = "aarch64", target_arch = "x86_64"),
+        any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "android"
+        )
+    ))]
+    fn cpu_engine_option_defaults_to_jit_and_allows_interpreter() {
+        let variables = core_option_variables();
+        assert_eq!(
+            unsafe { CStr::from_ptr(variables[7].key) },
+            c"dingooemu_cpu_engine"
+        );
+        assert!(read_core_options(|_| None).jit_enabled);
+        assert!(
+            !read_core_options(|key| {
+                (key == c"dingooemu_cpu_engine").then(|| "interpreter".to_string())
+            })
+            .jit_enabled
+        );
+    }
+
+    #[test]
+    #[cfg(all(
+        target_pointer_width = "64",
+        any(target_arch = "aarch64", target_arch = "x86_64"),
+        any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "android"
+        )
+    ))]
+    fn libretro_core_is_built_with_the_jit_on_this_target() {
+        // Regression: the libretro core once enabled the JIT only for 64-bit
+        // Android, so every desktop build ran the cached-block interpreter
+        // and could not hold 60 FPS in ordinary frontends.
+        let diagnostics = dingooemu_core::Emulator::default().jit_diagnostics();
+        assert!(
+            diagnostics.feature_available,
+            "dingooemu-core must be built with the jit feature on 64-bit non-iOS targets"
+        );
+    }
+
+    #[test]
+    fn loads_starts_resets_and_unloads_content() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        PIXEL_FORMAT.store(u32::MAX, Ordering::SeqCst);
+        INPUT_DESCRIPTORS_SET.store(false, Ordering::SeqCst);
+        INPUT_POLLED.store(false, Ordering::SeqCst);
+        VIDEO_WIDTH.store(0, Ordering::SeqCst);
+        VIDEO_NON_SOLID.store(false, Ordering::SeqCst);
+        SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
+        AUDIO_BATCH_CALLED.store(false, Ordering::SeqCst);
+        AUDIO_BUFFER_STATUS_REGISTERED.store(false, Ordering::SeqCst);
+        DIAGNOSTIC_AUDIO_BUFFER_REGISTERED.store(false, Ordering::SeqCst);
+        *ASYNC_AUDIO_CALLBACK.lock().unwrap() = None;
+        AUDIO_LATENCY_REQUESTED.store(false, Ordering::SeqCst);
+        MEMORY_MAPS_SET.store(false, Ordering::SeqCst);
+        SYSTEM_RAM_MAP_START.store(usize::MAX, Ordering::SeqCst);
+        VIDEO_RAM_MAP_START.store(usize::MAX, Ordering::SeqCst);
+
+        let test_directory = std::env::temp_dir().join(format!(
+            "dingooemu-libretro-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&test_directory).unwrap();
+        let path = test_directory.join("content.app");
+        std::fs::write(&path, minimal_app_bytes()).unwrap();
+        let path_string = CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        *SAVE_DIRECTORY.lock().unwrap() =
+            Some(CString::new(test_directory.to_string_lossy().as_bytes()).unwrap());
+        let info = RetroGameInfo {
+            path: path_string.as_ptr(),
+            data: ptr::null(),
+            size: 0,
+            meta: ptr::null(),
+        };
+
+        retro_set_environment(Some(test_environment));
+        retro_set_video_refresh(Some(test_video_refresh));
+        retro_set_audio_sample_batch(Some(test_audio_batch));
+        retro_set_input_poll(Some(test_input_poll));
+        retro_set_input_state(Some(test_input_state));
+        retro_init();
+        assert!(retro_load_game(&info));
+        assert_eq!(
+            PIXEL_FORMAT.load(Ordering::SeqCst),
+            RETRO_PIXEL_FORMAT_RGB565
+        );
+        assert!(INPUT_DESCRIPTORS_SET.load(Ordering::SeqCst));
+        assert!(MEMORY_MAPS_SET.load(Ordering::SeqCst));
+        assert_eq!(SYSTEM_RAM_MAP_START.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            VIDEO_RAM_MAP_START.load(Ordering::SeqCst),
+            dingooemu_core::a320::memory::LCD_FRAMEBUFFER_BASE as usize
+        );
+        assert_eq!(
+            retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM),
+            32 * 1024 * 1024
+        );
+        assert!(retro_get_memory_size(RETRO_MEMORY_VIDEO_RAM) >= (320 * 240 * 2) as usize);
+        let system_ram = retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
+        let video_ram = retro_get_memory_data(RETRO_MEMORY_VIDEO_RAM);
+        assert!(!system_ram.is_null());
+        assert!(!video_ram.is_null());
+
+        retro_run();
+        assert!(!crate::diagnostics::is_enabled());
+        assert!(!AUDIO_BUFFER_STATUS_REGISTERED.load(Ordering::SeqCst));
+        assert!(!AUDIO_LATENCY_REQUESTED.load(Ordering::SeqCst));
+        assert!(INPUT_POLLED.load(Ordering::SeqCst));
+        assert_eq!(VIDEO_WIDTH.load(Ordering::SeqCst), SCREEN_WIDTH);
+        assert!(!AUDIO_BATCH_CALLED.load(Ordering::SeqCst));
+        unsafe { ASYNC_AUDIO_CALLBACK.lock().unwrap().unwrap()() };
+        assert!(AUDIO_BATCH_CALLED.load(Ordering::SeqCst));
+        let cheat = CString::new("mem32:0x1000=0xfeedbeef").unwrap();
+        retro_cheat_set(0, true, cheat.as_ptr());
+        retro_run();
+        unsafe {
+            let emulator = EMULATOR.as_mut().unwrap();
+            assert!(emulator.is_running());
+            assert_eq!(emulator.buttons(), BUTTON_A | BUTTON_START);
+            assert_eq!(emulator.read_memory_u32(0x1000).unwrap(), 0xfeed_beef);
+            emulator.write_memory_u32(0x1000, 0x1234_5678).unwrap();
+        }
+
+        let mut state = vec![0u8; retro_serialize_size()];
+        assert!(retro_serialize(state.as_mut_ptr().cast(), state.len()));
+        unsafe {
+            EMULATOR
+                .as_mut()
+                .unwrap()
+                .write_memory_u32(0x1000, 0)
+                .unwrap();
+        }
+        assert!(retro_unserialize(state.as_ptr().cast(), state.len()));
+        let compact_size = 32 + u32::from_le_bytes(state[16..20].try_into().unwrap()) as usize;
+        assert!(retro_unserialize(state.as_ptr().cast(), compact_size));
+        assert!(!retro_unserialize(state.as_ptr().cast(), compact_size - 1));
+        let restored_frame = unsafe { EMULATOR.as_ref().unwrap().frame_count() };
+        VIDEO_WIDTH.store(0, Ordering::SeqCst);
+        dingooemu_state_present();
+        assert_eq!(VIDEO_WIDTH.load(Ordering::SeqCst), SCREEN_WIDTH);
+        assert_eq!(
+            unsafe { EMULATOR.as_ref().unwrap().frame_count() },
+            restored_frame
+        );
+        assert_eq!(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM), system_ram);
+        assert_eq!(retro_get_memory_data(RETRO_MEMORY_VIDEO_RAM), video_ram);
+        unsafe {
+            assert_eq!(
+                EMULATOR.as_ref().unwrap().read_memory_u32(0x1000).unwrap(),
+                0x1234_5678
+            );
+        }
+        retro_cheat_reset();
+        unsafe {
+            EMULATOR
+                .as_mut()
+                .unwrap()
+                .write_memory_u32(0x1000, 0)
+                .unwrap();
+        }
+        retro_run();
+        unsafe {
+            assert_eq!(
+                EMULATOR.as_ref().unwrap().read_memory_u32(0x1000).unwrap(),
+                0
+            );
+        }
+
+        retro_reset();
+        assert_eq!(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM), system_ram);
+        assert_eq!(retro_get_memory_data(RETRO_MEMORY_VIDEO_RAM), video_ram);
+        unsafe {
+            let emulator = EMULATOR.as_ref().unwrap();
+            assert!(emulator.is_running());
+            assert_eq!(emulator.read_memory_u32(0x1000).unwrap(), 0);
+        }
+
+        retro_unload_game();
+        assert!(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM).is_null());
+        assert_eq!(retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM), 0);
+        unsafe { assert!(EMULATOR.is_none()) };
+        retro_deinit();
+        assert!(!test_directory.join("dingooemu-diagnostic.txt").exists());
+        *SAVE_DIRECTORY.lock().unwrap() = None;
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(test_directory).unwrap();
+    }
+
+    #[test]
+    fn loads_arm_content_through_the_frontend_lifecycle() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        PIXEL_FORMAT.store(u32::MAX, Ordering::SeqCst);
+        INPUT_DESCRIPTORS_SET.store(false, Ordering::SeqCst);
+        INPUT_POLLED.store(false, Ordering::SeqCst);
+        VIDEO_WIDTH.store(0, Ordering::SeqCst);
+        VIDEO_NON_SOLID.store(false, Ordering::SeqCst);
+        SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
+        AUDIO_BATCH_CALLED.store(false, Ordering::SeqCst);
+        AUDIO_BUFFER_STATUS_REGISTERED.store(false, Ordering::SeqCst);
+        DIAGNOSTIC_AUDIO_BUFFER_REGISTERED.store(false, Ordering::SeqCst);
+        *ASYNC_AUDIO_CALLBACK.lock().unwrap() = None;
+        AUDIO_LATENCY_REQUESTED.store(false, Ordering::SeqCst);
+        MEMORY_MAPS_SET.store(false, Ordering::SeqCst);
+        SYSTEM_RAM_MAP_START.store(usize::MAX, Ordering::SeqCst);
+        VIDEO_RAM_MAP_START.store(usize::MAX, Ordering::SeqCst);
+
+        let test_directory = std::env::temp_dir().join(format!(
+            "dingooemu-libretro-arm-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&test_directory).unwrap();
+        let path = test_directory.join("content.c2s");
+        std::fs::write(
+            &path,
+            minimal_arm_bytes(dingooemu_core::ArmProfile::HOMEBREW_ORIGIN),
+        )
+        .unwrap();
+        let path_string = CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        *SAVE_DIRECTORY.lock().unwrap() =
+            Some(CString::new(test_directory.to_string_lossy().as_bytes()).unwrap());
+        let info = RetroGameInfo {
+            path: path_string.as_ptr(),
+            data: ptr::null(),
+            size: 0,
+            meta: ptr::null(),
+        };
+
+        retro_set_environment(Some(test_environment));
+        retro_set_video_refresh(Some(test_video_refresh));
+        retro_set_audio_sample_batch(Some(test_audio_batch));
+        retro_set_input_poll(Some(test_input_poll));
+        retro_set_input_state(Some(test_input_state));
+        retro_init();
+        assert!(retro_load_game(&info));
+        unsafe {
+            let emulator = EMULATOR.as_ref().unwrap();
+            assert_eq!(
+                emulator.content_format(),
+                dingooemu_core::ContentFormat::C2s
+            );
+            assert_eq!(
+                emulator.guest_architecture(),
+                dingooemu_core::GuestArchitecture::Arm32
+            );
+            assert_eq!(
+                emulator.arm_profile(),
+                Some(dingooemu_core::ArmProfile::Homebrew)
+            );
+            assert!(emulator.is_running());
+        }
+        assert_eq!(
+            retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM),
+            dingooemu_core::a330::memory::SYSTEM_RAM_SIZE
+        );
+        assert_eq!(
+            retro_get_memory_size(RETRO_MEMORY_VIDEO_RAM),
+            dingooemu_core::a330::memory::FRAMEBUFFER_SIZE
+        );
+        assert_eq!(
+            SYSTEM_RAM_MAP_START.load(Ordering::SeqCst),
+            dingooemu_core::a330::memory::SYSTEM_RAM_BASE as usize
+        );
+        assert_eq!(
+            VIDEO_RAM_MAP_START.load(Ordering::SeqCst),
+            dingooemu_core::a330::memory::FRAMEBUFFER_BASE as usize
+        );
+        let system_ram = retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
+        let video_ram = retro_get_memory_data(RETRO_MEMORY_VIDEO_RAM);
+        assert!(!system_ram.is_null());
+        assert!(!video_ram.is_null());
+
+        let cheat = CString::new("mem32:0x10000000=0xfeedbeef").unwrap();
+        retro_cheat_set(0, true, cheat.as_ptr());
+        retro_run();
+        assert!(INPUT_POLLED.load(Ordering::SeqCst));
+        assert_eq!(VIDEO_WIDTH.load(Ordering::SeqCst), SCREEN_WIDTH);
+        unsafe {
+            let emulator = EMULATOR.as_mut().unwrap();
+            assert_eq!(emulator.buttons(), BUTTON_A | BUTTON_START);
+            assert_eq!(
+                emulator
+                    .read_memory_u32(dingooemu_core::a330::memory::SYSTEM_RAM_BASE)
+                    .unwrap(),
+                0xfeed_beef
+            );
+            emulator
+                .write_memory_u32(dingooemu_core::a330::memory::SYSTEM_RAM_BASE, 0x1234_5678)
+                .unwrap();
+        }
+
+        assert_eq!(retro_serialize_size(), 128 * 1024 * 1024);
+        let mut state = vec![0u8; retro_serialize_size()];
+        assert!(retro_serialize(state.as_mut_ptr().cast(), state.len()));
+        unsafe {
+            EMULATOR
+                .as_mut()
+                .unwrap()
+                .write_memory_u32(dingooemu_core::a330::memory::SYSTEM_RAM_BASE, 0)
+                .unwrap();
+        }
+        assert!(retro_unserialize(state.as_ptr().cast(), state.len()));
+        let compact_size = 32 + u32::from_le_bytes(state[16..20].try_into().unwrap()) as usize;
+        assert!(retro_unserialize(state.as_ptr().cast(), compact_size));
+        assert!(!retro_unserialize(state.as_ptr().cast(), compact_size - 1));
+        let restored_frame = unsafe { EMULATOR.as_ref().unwrap().frame_count() };
+        VIDEO_WIDTH.store(0, Ordering::SeqCst);
+        dingooemu_state_present();
+        assert_eq!(VIDEO_WIDTH.load(Ordering::SeqCst), SCREEN_WIDTH);
+        assert_eq!(
+            unsafe { EMULATOR.as_ref().unwrap().frame_count() },
+            restored_frame
+        );
+        assert_eq!(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM), system_ram);
+        assert_eq!(retro_get_memory_data(RETRO_MEMORY_VIDEO_RAM), video_ram);
+        unsafe {
+            assert_eq!(
+                EMULATOR
+                    .as_ref()
+                    .unwrap()
+                    .read_memory_u32(dingooemu_core::a330::memory::SYSTEM_RAM_BASE)
+                    .unwrap(),
+                0x1234_5678
+            );
+        }
+
+        retro_cheat_reset();
+        retro_reset();
+        assert_eq!(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM), system_ram);
+        assert_eq!(retro_get_memory_data(RETRO_MEMORY_VIDEO_RAM), video_ram);
+        unsafe {
+            let emulator = EMULATOR.as_ref().unwrap();
+            assert!(emulator.is_running());
+            assert_eq!(
+                emulator
+                    .read_memory_u32(dingooemu_core::a330::memory::SYSTEM_RAM_BASE)
+                    .unwrap(),
+                0
+            );
+        }
+
+        unsafe {
+            EMULATOR
+                .as_mut()
+                .unwrap()
+                .write_memory_u32(dingooemu_core::ArmProfile::HOMEBREW_ORIGIN, 0xe12f_ff1e)
+                .unwrap();
+        }
+        retro_run();
+        assert!(SHUTDOWN_REQUESTED.load(Ordering::SeqCst));
+        assert!(VIDEO_NON_SOLID.load(Ordering::SeqCst));
+        unsafe { assert!(!EMULATOR.as_ref().unwrap().is_running()) };
+
+        retro_unload_game();
+        assert!(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM).is_null());
+        assert_eq!(retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM), 0);
+        unsafe { assert!(EMULATOR.is_none()) };
+        retro_deinit();
+        *SAVE_DIRECTORY.lock().unwrap() = None;
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(test_directory).unwrap();
+    }
+}

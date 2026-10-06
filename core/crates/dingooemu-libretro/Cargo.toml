@@ -1,0 +1,29 @@
+[package]
+name = "dingooemu-libretro"
+description.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# The libretro buildbot's official Rust CI templates build with
+# `cargo build --release` and then rename the cdylib by appending `_libretro`
+# (e.g. libdingooemu.so -> dingooemu_libretro.so), so the lib target is
+# named `dingooemu` (matching CORENAME in .gitlab-ci.yml). For local RetroArch
+# installs, rename the produced cdylib to dingooemu_libretro.<ext> manually.
+name = "dingooemu"
+crate-type = ["staticlib"]
+
+[dependencies]
+log.workspace = true
+
+# The JIT needs a 64-bit host with executable memory and a Cranelift-native
+# backend. Apple mobile platforms (iOS, tvOS, watchOS) forbid runtime code
+# generation, and 32-bit targets have no Cranelift-native backend, so those
+# builds keep the cached-block interpreter only. The allowlist keeps unknown
+# targets off the translator instead of guessing they can host one.
+[target.'cfg(all(target_pointer_width = "64", any(target_arch = "aarch64", target_arch = "x86_64"), any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "android")))'.dependencies]
+dingooemu-core = { workspace = true, features = ["jit"] }
+
+[target.'cfg(not(all(target_pointer_width = "64", any(target_arch = "aarch64", target_arch = "x86_64"), any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "android"))))'.dependencies]
+dingooemu-core.workspace = true

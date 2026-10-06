@@ -1,0 +1,12 @@
+.DS_Store
+**/__pycache__/
+web/node_modules/
+web/dist/
+web/.env
+web/.env.*
+core/target/
+core/target-*/
+retroarch-src/obj-emscripten*/
+retroarch-src/libretro_emscripten.a
+retroarch-src/dingooemu_libretro.js
+retroarch-src/dingooemu_libretro.wasm

@@ -1,0 +1,52 @@
+{
+  "upstream": {
+    "DingooEmu": {
+      "repository": "https://github.com/AloysHF/DingooEmu",
+      "version": "0.3.0",
+      "local_modifications": true
+    },
+    "RetroArch": {
+      "repository": "https://github.com/libretro/RetroArch",
+      "commit": "ef17416e6ccba1b67d55d43243708d6d96d15486",
+      "local_modifications": true
+    }
+  },
+  "runtime_toolchain": {
+    "rust": "nightly-2026-10-04",
+    "emscripten": "6.0.11"
+  },
+  "runtime_files": {
+    "runtime/ASSETS-COPYING": {
+      "bytes": 18660,
+      "sha256": "469faa8457ffed7428f1c150f4d8682ce25f2d991a694eec544e661f43452f50"
+    },
+    "runtime/audioworklet/dingooemu_libretro.js": {
+      "bytes": 358208,
+      "sha256": "896c1b391c1e39f9d43ee04e7f8fa5d764352413cf24340cf0f7a3367fa73f21"
+    },
+    "runtime/audioworklet/dingooemu_libretro.wasm": {
+      "bytes": 3795567,
+      "sha256": "2395783f4135ca997ac6d2b2bce22159cda3756752bc694b08fb5771d382145e"
+    },
+    "runtime/dingooemu_libretro.info": {
+      "bytes": 782,
+      "sha256": "ef27ab93fc126d655d587722faf9791c5d84652ee600f3b6ee5bdee706845080"
+    },
+    "runtime/dingooemu_libretro.js": {
+      "bytes": 305526,
+      "sha256": "5b5e95af61edee45dd2281312aa9cff707580818d1a9dbb5a9f65354da58da56"
+    },
+    "runtime/dingooemu_libretro.wasm": {
+      "bytes": 3649838,
+      "sha256": "5c7a13a14894a701d766324d3213feb4a956d37db2cca9f2d22fc826bf248ec5"
+    },
+    "runtime/font.ttf": {
+      "bytes": 4474312,
+      "sha256": "9ab176afc8c2499ec152295e5c46aaed217ed53cd7ef1cc9c037ed9b9b209e48"
+    },
+    "runtime/retroarch.png": {
+      "bytes": 4068,
+      "sha256": "6e15174de2ca83eaacccc5b3ba1d76d64c8a181182a73815a1fa07ec57678276"
+    }
+  }
+}
