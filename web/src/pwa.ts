@@ -37,7 +37,7 @@ export function setupPwa() {
   let gameStarted=false;
   // Import is briefly gated while the first install prepares isolation. If it
   // takes longer, allow compatible audio and never reload after game selection.
-  const fallback={ready:Promise.resolve(),gameStarted:()=>{gameStarted=true;}};
+  const fallback={ready:Promise.resolve(),prepared:Promise.resolve(),gameStarted:()=>{gameStarted=true;}};
   const displayMode=matchMedia('(display-mode: standalone)');
   const standalone=()=>displayMode.matches || Boolean((navigator as Navigator & {standalone?:boolean}).standalone);
   // iOS has no native install prompt. Include iPads using a desktop user agent.
@@ -116,5 +116,5 @@ export function setupPwa() {
   let timeout:ReturnType<typeof setTimeout>;
   const deadline=new Promise<void>(resolve=>{timeout=setTimeout(resolve,8000);});
   const ready=Promise.race([preparation,deadline]).finally(()=>clearTimeout(timeout));
-  return {ready,gameStarted:fallback.gameStarted};
+  return {ready,prepared:preparation,gameStarted:fallback.gameStarted};
 }

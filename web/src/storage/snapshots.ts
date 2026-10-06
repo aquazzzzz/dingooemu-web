@@ -53,10 +53,10 @@ export async function importSnapshot(blob:Blob):Promise<Snapshot> {
 }
 export class SnapshotStore {
   private db:Promise<IDBDatabase>;
-  constructor(name:string){this.db=new Promise((resolve,reject)=>{const req=indexedDB.open(name,1);req.onupgradeneeded=()=>{req.result.createObjectStore('meta',{keyPath:'id'});req.result.createObjectStore('data',{keyPath:'meta.id'});};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});void this.db.catch(()=>{});}
+  constructor(name:string){this.db=new Promise((resolve,reject)=>{const req=indexedDB.open(name,1);req.onupgradeneeded=()=>{req.result.createObjectStore('meta',{keyPath:'id'});req.result.createObjectStore('data',{keyPath:'meta.id'});};req.onsuccess=()=>{req.result.onversionchange=()=>req.result.close();resolve(req.result);};req.onerror=()=>reject(req.error);});void this.db.catch(()=>{});}
+  async close() {try {(await this.db).close();}catch {}}
   async list():Promise<SnapshotMeta[]> {const db=await this.db;return new Promise((resolve,reject)=>{const req=db.transaction('meta').objectStore('meta').getAll();req.onsuccess=()=>resolve(req.result.sort((a:SnapshotMeta,b:SnapshotMeta)=>b.createdAt-a.createdAt));req.onerror=()=>reject(req.error);});}
   async load(id:string):Promise<Snapshot> {const db=await this.db;return new Promise((resolve,reject)=>{const req=db.transaction('data').objectStore('data').get(id);req.onsuccess=()=>req.result?resolve(req.result):reject(new Error(t("即时存档已被删除，请刷新列表。")));req.onerror=()=>reject(req.error);});}
   async add(value:Snapshot) {await validateSnapshot(value);const db=await this.db;return new Promise<void>((resolve,reject)=>{const tx=db.transaction(['meta','data'],'readwrite');let error:unknown;try{tx.objectStore('meta').add(value.meta);tx.objectStore('data').add(value);}catch(e){error=e;tx.abort();}tx.oncomplete=()=>resolve();tx.onabort=()=>reject(error||tx.error);});}
   async remove(ids:string[]) {const db=await this.db;return new Promise<void>((resolve,reject)=>{const tx=db.transaction(['meta','data'],'readwrite');for(const id of ids){tx.objectStore('meta').delete(id);tx.objectStore('data').delete(id);}tx.oncomplete=()=>resolve();tx.onabort=()=>reject(tx.error);});}
 }
-

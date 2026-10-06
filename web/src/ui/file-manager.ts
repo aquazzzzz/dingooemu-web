@@ -13,6 +13,7 @@ interface Hooks {
   sync():Promise<void>;
   stop(hash:string):Promise<void>;
   play(hash:string):Promise<void>;
+  clearAll():Promise<void>;
 }
 export class FileManager {
   private selected:HTMLSelectElement;
@@ -26,9 +27,17 @@ export class FileManager {
   constructor(private element:HTMLDetailsElement,private store:SaveStore,private hooks:Hooks) {
     element.innerHTML=`<summary>本站文件</summary><p>导入的游戏、资源和游戏写出的文件保存在当前网址的浏览器中。选择已保存的游戏后可直接运行。修改当前游戏的文件会先停止游戏。</p>
 <label class="managed-label" for="managed-games">游戏</label><div class="game-library-choice"><select id="managed-games" aria-label="选择游戏文件空间"></select><button id="files-play">运行</button></div><p id="managed-summary"></p><ul id="managed-files" class="managed-files"></ul>
-<div class="file-actions"><button id="files-refresh">刷新列表</button><button id="files-retry">重试保存</button><button id="files-export">导出备份</button><button id="files-export-current">导出当前文件</button><label class="import-button">导入文件 / 备份<input id="files-import" type="file" multiple></label><!-- Folder import temporarily disabled. <label class="import-button">导入文件夹<input id="files-folder" type="file" webkitdirectory multiple></label> --><button id="files-remove-game">删除此游戏的全部文件</button><button id="files-remove-package">移除本地游戏</button></div><p id="files-message" role="status" aria-live="polite"></p><p id="files-capacity"></p>`;
+<div class="file-actions"><button id="files-refresh">刷新列表</button><button id="files-retry">重试保存</button><button id="files-export">导出备份</button><button id="files-export-current">导出当前文件</button><label class="import-button">导入文件 / 备份<input id="files-import" type="file" multiple></label><!-- Folder import temporarily disabled. <label class="import-button">导入文件夹<input id="files-folder" type="file" webkitdirectory multiple></label> --><button id="files-remove-game">删除此游戏的全部文件</button><button id="files-remove-package">移除本地游戏</button></div><p id="files-message" role="status" aria-live="polite"></p><p id="files-capacity"></p><div class="site-data-reset"><button id="files-clear-all">清除所有数据</button><p>删除本站全部游戏、资源、游戏内存档、即时存档、设置和离线缓存。此操作无法撤销，请先导出需要的备份。</p><p id="site-data-status" role="status" aria-live="polite"></p></div>`;
     localize(element);
     this.selected=this.get('managed-games');this.list=this.get('managed-files');this.message=this.get('files-message');
+    this.get<HTMLButtonElement>('files-clear-all').onclick=()=>void this.run(async()=>{
+      const status=this.get('site-data-status');
+      if(!navigator.onLine){setText(status,t("请联网后再清除所有数据，以便重新下载运行资源。"));return;}
+      if(!confirm(t("清除本站所有数据？全部游戏、资源、游戏内存档、即时存档、设置和离线缓存都会删除，且无法恢复。请先导出需要的备份并关闭本站其他窗口。确认后页面将刷新。")))return;
+      setText(status,t("正在清除本站所有数据…"));
+      try {await this.hooks.clearAll();}
+      catch {setText(status,t("清理未完成，部分数据可能已删除。请检查浏览器权限，重试清理或刷新页面。"));}
+    });
     this.selected.onchange=()=>void this.run(()=>this.refresh());
     this.get<HTMLButtonElement>('files-play').onclick=()=>void this.run(async()=>{await this.hooks.play(this.selected.value);setText(this.message,t("游戏已载入。"));});
     this.get<HTMLButtonElement>('files-remove-package').onclick=()=>void this.run(async()=>{const hash=this.selected.value;if(!hash||!confirm(t("移除此游戏及资源的本地副本？游戏内存档和即时存档会保留。")))return;await this.store.removePackage(hash);await this.refresh(hash);setText(this.message,t("本地游戏已移除，可重新导入。"));});
@@ -130,4 +139,3 @@ export class FileManager {
     await this.refresh(hash);setText(this.message,t("文件已导入，运行游戏即可使用。"));
   }
 }
-

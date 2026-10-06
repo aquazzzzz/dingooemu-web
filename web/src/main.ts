@@ -1,6 +1,8 @@
 import {t,setText,literal,setupLanguages,localize,onLanguageChange} from './i18n';
 import './styles.css';
 import {setupPwa} from './pwa';
+import {setupSiteCache,clearOfflineCache,reloadAfterCacheClear} from './site-cache';
+import {clearSiteData} from './storage/site-data';
 import {EmulatorClient} from './emulator/client';
 import {InputState,buttons,type Button} from './input/state';
 import {Keyboard} from './input/keyboard';
@@ -18,7 +20,7 @@ import {setupSourceLink} from './source-link';
 const contour='M47 5H79Q82 5 82 8V41Q82 44 85 44H118Q121 44 121 47V79Q121 82 118 82H85Q82 82 82 85V118Q82 121 79 121H47Q44 121 44 118V85Q44 82 41 82H8Q5 82 5 79V47Q5 44 8 44H41Q44 44 44 41V8Q44 5 47 5Z';
 const dpadFace=`<svg class="dpad-face" viewBox="0 0 126 126" aria-hidden="true"><defs><linearGradient id="dpad-face" x2=".8" y2="1"><stop stop-color="#557564"/><stop offset="1" stop-color="#263e32"/></linearGradient><clipPath id="dpad-clip"><path d="${contour}"/></clipPath>${([['Up',50,12],['Right',88,50],['Down',50,88],['Left',12,50]] as const).map(([dir,x,y])=>`<radialGradient id="dpad-glow-${dir}" cx="${x}%" cy="${y}%" r="58%"><stop stop-color="#b5ffd1" stop-opacity=".9"/><stop offset=".45" stop-color="#8debb0" stop-opacity=".36"/><stop offset="1" stop-color="#8debb0" stop-opacity="0"/></radialGradient>`).join('')}</defs><path d="${contour}" transform="translate(0 3)" fill="#18291f"/><path d="${contour}" fill="url(#dpad-face)" stroke="#a9c7b377" stroke-width="1.5"/><g clip-path="url(#dpad-clip)">${['Up','Right','Down','Left'].map(dir=>`<rect class="dpad-light light-${dir}" width="126" height="126" fill="url(#dpad-glow-${dir})"/>`).join('')}</g></svg>`;
 const app=document.querySelector<HTMLDivElement>('#app')!;
-app.innerHTML=`<main><header><div class="header-main"><div class="header-brand"><span class="eyebrow">POWERED BY <a href="https://github.com/libretro/RetroArch" target="_blank" rel="noopener noreferrer">RETROARCH</a> &amp; <a href="https://github.com/AloysHF/DingooEmu" target="_blank" rel="noopener noreferrer">DINGOOEMU</a></span><h1>DingooEmu Web</h1></div><div class="header-controls"><div class="language-placeholder" role="group" aria-label="界面语言"><div class="language-options"><button data-language="zh-CN" class="selected" aria-pressed="true" lang="zh-CN">中文</button><button data-language="en" aria-pressed="false" lang="en">English</button><button data-language="ja" aria-pressed="false" lang="ja">日本語</button></div></div><div class="pwa-actions"><button id="pwa-install" title="添加到设备，像应用一样打开。" hidden>安装网页应用</button><span id="pwa-status" role="status" aria-live="polite"></span></div></div></div><p class="header-description">丁果游戏模拟器 · 可添加到桌面／主屏幕 · 离线运行 · 即时存档</p></header>
+app.innerHTML=`<main><header><div class="header-main"><div class="header-brand"><span class="eyebrow">POWERED BY <a href="https://github.com/libretro/RetroArch" target="_blank" rel="noopener noreferrer">RETROARCH</a> &amp; <a href="https://github.com/AloysHF/DingooEmu" target="_blank" rel="noopener noreferrer">DINGOOEMU</a></span><h1>DingooEmu Web</h1></div><div class="header-controls"><div class="language-placeholder" role="group" aria-label="界面语言"><div class="language-options"><button data-language="zh-CN" class="selected" aria-pressed="true" lang="zh-CN">中文</button><button data-language="en" aria-pressed="false" lang="en">English</button><button data-language="ja" aria-pressed="false" lang="ja">日本語</button></div></div><div class="pwa-actions"><button id="pwa-install" title="添加到设备，像应用一样打开。" hidden>安装网页应用</button><button id="clear-site-cache" title="清除离线资源缓存并刷新，保留游戏、存档和设置。" disabled>清除本站缓存</button><span id="pwa-status" role="status" aria-live="polite"></span><span id="cache-status" role="status" aria-live="polite"></span></div></div></div><p class="header-description">丁果游戏模拟器 · 可添加到桌面／主屏幕 · 离线运行 · 即时存档</p></header>
 <section id="pwa-install-guide" class="pwa-install-guide" role="region" aria-label="安装网页应用" hidden><div data-install-guide="ios"><p>如果当前浏览器没有以下选项，请用 Safari 打开本站。</p><ol><li>点浏览器的“分享”按钮，选择“添加到主屏幕”。</li><li>如果出现“作为网页 App 打开”，保持开启，然后点“添加”。</li><li>从主屏幕上的 DingooEmu Web 图标打开，即可隐藏浏览器栏。</li></ol></div><div data-install-guide="mac" hidden><p>需要 macOS Sonoma 14 或更高版本。</p><ol><li>在 Safari 菜单栏选择“文件”→“添加到程序坞”，或在“共享”菜单中选择“添加到程序坞”。</li><li>确认名称后点“添加”。</li><li>从程序坞中的 DingooEmu Web 图标打开，即可在独立窗口中使用。</li></ol></div></section>
 <section class="workspace"><div id="game-stage" class="game-stage"><div class="screen-wrap"><canvas id="canvas" width="320" height="240" tabindex="0" aria-label="A320 画面"></canvas><output id="fps" class="fps" aria-label="模拟帧率">FPS -</output></div>
 <div id="touch" class="touch" hidden><button data-button="L" class="shoulder-left">L</button><button data-button="R" class="shoulder-right">R</button>
@@ -57,11 +59,12 @@ let preparingPwa=true;
 get<HTMLInputElement>('file').disabled=true;
 void pwa.ready.then(()=>{preparingPwa=false;enable();});
 const status=get('status'), canvas=get<HTMLCanvasElement>('canvas'), client=new EmulatorClient(canvas);
-let loaded=false, busy=false;
+let loaded=false, busy=false,clearingSiteData=false;
 type Playback = 'empty' | 'running' | 'paused' | 'stopped' | 'error';
 let playback:Playback='empty', statusRevision=0, visibilityPause=false;
 const storagePrefix=`dingooemu-hybrid:${location.pathname.replace(/\/[^/]*$/, '/')}`;
 const saveStore=new SaveStore(storagePrefix+'files');
+const snapshotStore=new SnapshotStore(storagePrefix+'snapshots');
 let activeGame:GameImport|undefined,pendingFiles:MountedFile[]|undefined;
 let snapshotIdentity:SnapshotIdentity|undefined;
 const fileManager=new FileManager(get<HTMLDetailsElement>('file-manager'),saveStore,{
@@ -72,8 +75,31 @@ const fileManager=new FileManager(get<HTMLDetailsElement>('file-manager'),saveSt
     clearInput();await client.request('dispose');loaded=false;activeGame=undefined;get('game-name').textContent='';renderResources();
     setPlayback('stopped',t("游戏已停止，修改文件后可在“本站文件”点击“运行”。"));
   },
+  clearAll:async()=>{
+    const controls=[...app.querySelectorAll<HTMLButtonElement|HTMLInputElement|HTMLSelectElement>('button,input,select')].map(node=>({node,disabled:node.disabled}));
+    clearingSiteData=true;enable();
+    try {
+      await pwa.prepared;
+      clearInput();keyboard.setBlocked(true);
+      measurement?.cancel(t("游戏暂停、重置、切换或结束，测量提前结束"));
+      await client.request('discard');
+      loaded=false;activeGame=undefined;pendingFiles=undefined;snapshotIdentity=undefined;
+      get('game-name').textContent='';renderResources();setPlayback('stopped','');
+      await saveStore.close();await snapshotStore.close();
+      await clearSiteData(storagePrefix,message=>setText(get('site-data-status'),message));
+      await clearOfflineCache();
+      setText(get('site-data-status'),t("本站所有数据已清除，正在刷新…"));
+      reloadAfterCacheClear();
+      // Keep operations disabled until navigation, so nothing recreates deleted data.
+      await new Promise<void>(()=>{});
+    } catch(error){
+      clearingSiteData=false;keyboard.setBlocked(false);
+      for(const {node,disabled} of controls)node.disabled=disabled;
+      throw error;
+    }
+  },
 });
-const snapshotManager=new SnapshotManager(get<HTMLDetailsElement>('snapshot-manager'),new SnapshotStore(storagePrefix+'snapshots'),{
+const snapshotManager=new SnapshotManager(get<HTMLDetailsElement>('snapshot-manager'),snapshotStore,{
   operate:action,current:()=>loaded&&client.fileIdentity?snapshotIdentity:undefined,
   capture:async save=>{clearInput();measurement?.cancel(t("保存即时存档，测量已结束"));await client.captureSnapshot(save);},
   restore:async snapshot=>{clearInput();measurement?.cancel(t("读取即时存档，测量已结束"));await client.restoreSnapshot(snapshot);setPlayback('running',t("即时读档完成，游戏已继续运行。"));await fileManager.refresh(snapshot.meta.game);},
@@ -158,6 +184,7 @@ function enable() {
   get('resource-list').querySelectorAll<HTMLButtonElement>('button').forEach(button=>button.disabled=busy||!loaded);
   fileManager.setEnabled(!busy&&!preparingPwa);
   snapshotManager.setEnabled(!busy&&!preparingPwa);
+  if(clearingSiteData)for(const node of app.querySelectorAll<HTMLButtonElement|HTMLInputElement|HTMLSelectElement>('button,input,select'))node.disabled=true;
 }
 function setPlayback(value:Playback,message:string) {playback=value;setText(status,message);renderFps();enable();}
 async function start() {
@@ -258,6 +285,15 @@ document.addEventListener('visibilitychange',()=>{
   if(document.hidden){clearInput();if(busy)visibilityPause=true;else if(loaded&&playback==='running')void action(()=>pause(t("页面隐藏，已暂停。")));}
 });
 enable();
+
+setupSiteCache(pwa.prepared,async()=>{
+  if(busy)throw new Error('operation in progress');
+  busy=true;enable();
+  try {
+    if(loaded&&playback==='running')await pause();
+    await client.flushFiles();
+  } finally {busy=false;enable();}
+});
 
 
 onLanguageChange(()=>{renderBindings();enable();});

@@ -22,6 +22,7 @@ export function validateFiles(files:MountedFile[],limit=128*1024*1024) {
 export const gameHash=sha256;
 export class SaveStore {
   private database:Promise<IDBDatabase>;
+  private closed=false;
   constructor(private name:string) {this.database=this.connect();}
   private connect():Promise<IDBDatabase> {
     const database=new Promise<IDBDatabase>((resolve,reject)=>{
@@ -33,12 +34,16 @@ export class SaveStore {
         if(!db.objectStoreNames.contains('packages'))db.createObjectStore('packages',{keyPath:'hash'});
         if(!db.objectStoreNames.contains('package-meta'))db.createObjectStore('package-meta',{keyPath:'hash'});
       };
-      request.onsuccess=()=>{if(blocked){request.result.close();return;}request.result.onversionchange=()=>request.result.close();resolve(request.result);};
+      request.onsuccess=()=>{if(blocked){request.result.close();return;}request.result.onversionchange=()=>{this.closed=true;request.result.close();};resolve(request.result);};
       request.onerror=()=>reject(request.error);
       request.onblocked=()=>{blocked=true;reject(new Error(t("存档数据库被其他窗口阻塞，请关闭其他窗口后重试。")));};
     });void database.catch(()=>{});return database;
   }
-  private async db() {try {return await this.database;}catch {this.database=this.connect();return this.database;}}
+  async close() {this.closed=true;try {(await this.database).close();}catch {}}
+  private async db() {
+    if(this.closed)throw new Error(t("本站数据正在清除，请刷新页面后再操作。"));
+    try {return await this.database;}catch {this.database=this.connect();return this.database;}
+  }
   async savePackage(value:GamePackage) {
     validateFiles(value.resources);if(!/^[a-f0-9]{64}$/.test(value.hash)||value.game.size+value.resources.reduce((n,f)=>n+f.bytes.length,0)>128*1024*1024)throw new Error(t("游戏包无效或超过 128 MiB。"));
     const db=await this.db();return new Promise<void>((resolve,reject)=>{
@@ -105,4 +110,3 @@ export function importSaves(text:string,hash:string):MountedFile[] {
     return {path:path(f.path),bytes:Uint8Array.from(atob(f.data),v=>v.charCodeAt(0))};
   });validateFiles(files,MAX_SAVE_BYTES);return files;
 }
-

@@ -368,7 +368,10 @@ export class EmulatorClient {
     const latency=this.audioDriver==='audioworklet'?t("\n核心积压：{0} · 输出队列：{1}\n浏览器处理：{2} · 设备输出估计：{3}",ms(runtime._dingooemu_audio_queue_ms?.()),ms(runtime._audioworklet_queue_ms?.()),ms(runtime._audioworklet_base_latency_ms?.()),ms(runtime._audioworklet_output_latency_ms?.())):'';
     this.onInfo(t("后端：RetroArch + DingooEmu Libretro\n编译：wasm32-unknown-emscripten · {0}\n音频缓冲目标：{1} ms{2}{3}\n{4}\n输入：0x{5}\nFPS 由 RetroArch 在画面内显示。",audio,this.audioLatency,underruns===undefined?'':t(" · 缺样计数：{0}",underruns),latency,this.lastReply||t("游戏已加载。"),this.sentMask.toString(16)));
   }
-  async request(command:'run'|'pause'|'reset'|'dispose') {
+  async request(command:'run'|'pause'|'reset'|'dispose'|'discard') {
+    // Full site reset deliberately discards files; prevent timers and pagehide
+    // from writing them back while disposal waits for the backend to quit.
+    if(command==='discard'){this.fileWriter=undefined;await this.dispose();return;}
     if(command==='dispose'){await this.dispose();return;}
     if(!this.module||!this.started)throw new Error(t("游戏未启动，请重新导入。"));
     if(command==='run'){this.module._cmd_unpause();this.paused=false;}

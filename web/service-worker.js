@@ -53,6 +53,12 @@ self.addEventListener('fetch', event => {
   if (event.request.cache === 'only-if-cached' && event.request.mode !== 'same-origin') return;
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin || !url.href.startsWith(ROOT)) return;
+  // Cache clearing unregisters us, but this document remains controlled until
+  // navigation. Fetch the next document afresh without reopening the old cache.
+  if (event.request.mode === 'navigate' && url.searchParams.has('__dingoo_cache_reset')) {
+    event.respondWith(fetch(new Request(event.request, {cache:'reload'})).then(isolatedResponse));
+    return;
+  }
   url.search = '';
   url.hash = '';
   // Only the app root aliases index.html; this is not a catch-all SPA router. A root installation

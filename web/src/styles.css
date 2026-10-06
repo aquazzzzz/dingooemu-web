@@ -196,6 +196,12 @@ body.game-fullscreen .site-about{display:none}
 .header-description{margin:6px 0 0}
 .pwa-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px 12px;margin:0;min-width:0;max-width:100%;text-align:right}
 .pwa-actions button{flex-shrink:0;white-space:nowrap}
+.pwa-actions #clear-site-cache{max-width:100%;white-space:normal;font-size:12px;padding:7px 10px}
+.site-data-reset{margin-top:20px;padding-top:16px;border-top:1px solid #61453b}
+.site-data-reset button{border-color:#a46b58;color:#ffd3bf;background:#3b2923}
+.site-data-reset button:hover{background:#51332a}
+.site-data-reset p{font-size:12px;margin:8px 0 0}
+#site-data-status:empty{display:none}
 .pwa-actions>span{max-width:100%;overflow-wrap:anywhere;color:#9db7aa;font-size:12px;line-height:1.5}
 .pwa-actions button[hidden],body.game-fullscreen .pwa-actions{display:none}
 .pwa-install-guide{margin-top:16px;padding:14px 18px;border:1px solid #3d5c4f;border-radius:10px;background:#172a22}
