@@ -2,7 +2,7 @@
   "id": "./",
   "name": "DingooEmu Web",
   "short_name": "DingooEmu Web",
-  "description": "Dingoo ゲームエミュレーター · デスクトップ／ホーム画面に追加 · オフライン対応 · ステートセーブ",
+  "description": "Dingoo ゲームエミュレーター · Web アプリとしてインストール可能 · オフライン対応 · ステートセーブ",
   "lang": "ja",
   "start_url": "./",
   "scope": "./",

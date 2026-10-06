@@ -2,7 +2,7 @@
   "id": "./",
   "name": "DingooEmu Web",
   "short_name": "DingooEmu Web",
-  "description": "Dingoo game emulator · Add to desktop / home screen · Offline play · Save states",
+  "description": "Dingoo game emulator · Installable web app · Offline play · Save states",
   "lang": "en",
   "start_url": "./",
   "scope": "./",

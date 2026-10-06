@@ -2,7 +2,7 @@
   "id": "./",
   "name": "DingooEmu Web",
   "short_name": "DingooEmu Web",
-  "description": "丁果游戏模拟器 · 可添加到桌面／主屏幕 · 离线运行 · 即时存档",
+  "description": "丁果游戏模拟器 · 可安装为网页应用 · 离线运行 · 即时存档",
   "lang": "zh-CN",
   "start_url": "./",
   "scope": "./",

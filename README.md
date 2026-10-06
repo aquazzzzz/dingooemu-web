@@ -10,9 +10,9 @@
 
 DingooEmu Web 在浏览器中运行丁果 A320（Dingoo A320）和歌美 A330（Gemei A330）掌机的原生游戏与应用。支持导入 A320 的 `.app` 和 A330 的 `.cc`、`.c2s`、`.c3s` 文件，也支持 ZIP 游戏包。
 
-网站支持中文、English、日本語，可添加到桌面／主屏幕，并提供离线运行、游戏管理与即时存档。游戏由您从本机导入，本仓库不包含游戏。
+网站支持中文、English、日本語，可安装为网页应用，并提供离线运行、游戏管理与即时存档。游戏由您从本机导入，本仓库不包含游戏。
 
-网站采用独立的网页界面，通过 RetroArch 的 WebAssembly 运行环境调用 DingooEmu 模拟核心。
+本站提供网页操作界面，并通过 RetroArch 的 WebAssembly 运行环境调用 DingooEmu 模拟核心。
 
 ### 目录结构
 
@@ -60,9 +60,9 @@ dingooemu-web/
 
 DingooEmu Web runs native games and applications for the Dingoo A320 and Gemei A330 handhelds in the browser. It supports A320 `.app` files, A330 `.cc`, `.c2s`, and `.c3s` files, as well as ZIP game packages.
 
-The website supports Chinese, English, and Japanese. It can be added to your desktop or home screen and provides offline operation, game management, and save states. You import games from your own device; this repository does not include games.
+The website supports Chinese, English, and Japanese. It can be installed as a web app and provides offline operation, game management, and save states. You import games from your own device; this repository does not include games.
 
-The website uses a custom web interface that runs the DingooEmu emulation core through RetroArch's WebAssembly runtime.
+This site provides a web interface and uses RetroArch's WebAssembly runtime to run the DingooEmu emulation core.
 
 ### Project structure
 
@@ -110,9 +110,9 @@ dingooemu-web/
 
 DingooEmu Web は、Dingoo A320 と Gemei A330 向けのネイティブゲームやアプリケーションをブラウザーで実行します。A320 の `.app` ファイル、A330 の `.cc`、`.c2s`、`.c3s` ファイル、および ZIP 形式のゲームパッケージに対応しています。
 
-サイトは中国語、英語、日本語に対応し、デスクトップやホーム画面への追加、オフラインでの実行、ゲーム管理、ステートセーブ機能を備えています。ゲームはお使いの端末からインポートしてください。このリポジトリにゲームは含まれていません。
+サイトは中国語、英語、日本語に対応し、Web アプリとしてインストールできます。オフラインでの実行、ゲーム管理、ステートセーブ機能を備えています。ゲームはお使いの端末からインポートしてください。このリポジトリにゲームは含まれていません。
 
-独自の Web インターフェースから、RetroArch の WebAssembly 実行環境を通じて DingooEmu のエミュレーションコアを利用しています。
+このサイトは Web ベースの操作画面を提供し、RetroArch の WebAssembly 実行環境を通じて DingooEmu のエミュレーションコアを利用しています。
 
 ### ディレクトリ構成
 
