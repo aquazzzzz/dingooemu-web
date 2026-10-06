@@ -1,6 +1,8 @@
 # DingooEmu Web
 
-[访问网站 / Open website](https://aquazzzzz.github.io/dingooemu-web/)
+[中文](#中文) · [English](#english) · [日本語](#日本語)
+
+[访问网站 / Open website / サイトを開く](https://aquazzzzz.github.io/dingooemu-web/)
 
 ## 中文
 
@@ -40,6 +42,11 @@ dingooemu-web/
 ├── runtime-manifest.json           # 运行文件清单与版本记录
 └── LICENSES.md                     # 组件许可索引
 ```
+
+### 今后计划
+
+- **WebAssembly JIT**：探索浏览器端动态重编译方案，以改善游戏运行性能。
+- **实体手柄接入**：利用现有输入接口，增加手柄连接状态显示和按键映射设置。
 
 ### 开源组件与许可
 
@@ -86,8 +93,63 @@ dingooemu-web/
 └── LICENSES.md                     # Component license index
 ```
 
+### Roadmap
+
+- **WebAssembly JIT**: Explore dynamic recompilation in the browser to improve game performance.
+- **Gamepad integration**: Use existing input interfaces to add gamepad connection status displays and button mapping settings.
+
 ### Open-source components and licenses
 
 - [DingooEmu](https://github.com/AloysHF/DingooEmu) · AloysHF: source in `core/`, licensed under BSD 3-Clause. See [core/LICENSE](core/LICENSE).
 - [RetroArch](https://github.com/libretro/RetroArch): source in `retroarch-src/`, licensed under GPL-3.0-or-later. See [retroarch-src/COPYING](retroarch-src/COPYING) and the license notices in individual source files.
 - Third-party dependencies, fonts, and other assets retain their respective licenses. See [LICENSES.md](LICENSES.md) and the website's open-source licenses and third-party notices page.
+
+## 日本語
+
+### サイト概要
+
+DingooEmu Web は、Dingoo A320 と Gemei A330 向けのネイティブゲームやアプリケーションをブラウザーで実行します。A320 の `.app` ファイル、A330 の `.cc`、`.c2s`、`.c3s` ファイル、および ZIP 形式のゲームパッケージに対応しています。
+
+サイトは中国語、英語、日本語に対応し、デスクトップやホーム画面への追加、オフラインでの実行、ゲーム管理、ステートセーブ機能を備えています。ゲームはお使いの端末からインポートしてください。このリポジトリにゲームは含まれていません。
+
+独自の Web インターフェースから、RetroArch の WebAssembly 実行環境を通じて DingooEmu のエミュレーションコアを利用しています。
+
+### ディレクトリ構成
+
+```text
+dingooemu-web/
+├── .github/workflows/pages.yml     # GitHub Pages の自動デプロイ設定
+├── web/                           # Web アプリケーション
+│   ├── src/                       # UI、スタイル、翻訳、ゲーム管理、実行処理
+│   ├── public/                    # 静的リソース
+│   │   ├── runtime/               # Wasm、JavaScript、フォント、実行用リソース
+│   │   │   └── audioworklet/       # AudioWorklet 音声実行版
+│   │   ├── devices/               # 携帯ゲーム機の画像
+│   │   ├── icons/                 # PWA アイコン
+│   │   └── licenses/              # サイトのライセンスページで使用する本文
+│   ├── index.html                 # サイトの入口
+│   ├── licenses.html              # ライセンスページの入口
+│   ├── service-worker.js          # オフラインキャッシュのテンプレート
+│   ├── vite.config.ts             # Web ビルド設定
+│   ├── package.json               # npm コマンドと依存関係
+│   └── package-lock.json          # 依存関係のバージョン固定ファイル
+├── core/                          # DingooEmu の Rust ソースコード
+│   └── crates/
+│       ├── dingooemu-core/         # A320/A330 エミュレーションコア
+│       └── dingooemu-libretro/     # libretro インターフェース
+├── retroarch-src/                 # RetroArch のソースコードと依存関係
+├── scripts/                       # ビルドとローカルプレビュー用スクリプト
+├── runtime-manifest.json           # 実行用ファイル一覧とバージョン記録
+└── LICENSES.md                     # 構成要素のライセンス一覧
+```
+
+### 今後の予定
+
+- **WebAssembly JIT**：ブラウザー上での動的再コンパイル方式を検討し、ゲームの実行性能の改善を目指します。
+- **ゲームパッドの接続**：既存の入力インターフェースを利用し、接続状態の表示とボタン割り当て設定を追加します。
+
+### オープンソースの構成要素とライセンス
+
+- [DingooEmu](https://github.com/AloysHF/DingooEmu) · AloysHF：ソースコードは `core/` にあり、BSD 3-Clause ライセンスで提供されています。[core/LICENSE](core/LICENSE) を参照してください。
+- [RetroArch](https://github.com/libretro/RetroArch)：ソースコードは `retroarch-src/` にあり、GPL-3.0-or-later ライセンスで提供されています。[retroarch-src/COPYING](retroarch-src/COPYING) および各ソースファイルのライセンス表記を参照してください。
+- 第三者の依存ライブラリー、フォント、その他のリソースには、それぞれのライセンスが適用されます。[LICENSES.md](LICENSES.md) と、サイトの「オープンソースライセンスと第三者の表記」を参照してください。
