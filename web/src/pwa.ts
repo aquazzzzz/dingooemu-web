@@ -29,18 +29,39 @@ function isolationVersion(worker:ServiceWorker):Promise<string|undefined> {
 export function setupPwa() {
   const status=document.querySelector<HTMLElement>('#pwa-status')!;
   const install=document.querySelector<HTMLButtonElement>('#pwa-install')!;
+  const guide=document.querySelector<HTMLElement>('#pwa-install-guide')!;
   let prompt:InstallPrompt|undefined;
+  let installed=false;
   let gameStarted=false;
   // Import is briefly gated while the first install prepares isolation. If it
   // takes longer, allow compatible audio and never reload after game selection.
   const fallback={ready:Promise.resolve(),gameStarted:()=>{gameStarted=true;}};
-  const standalone=()=>matchMedia('(display-mode: standalone)').matches || Boolean((navigator as Navigator & {standalone?:boolean}).standalone);
+  const displayMode=matchMedia('(display-mode: standalone)');
+  const standalone=()=>displayMode.matches || Boolean((navigator as Navigator & {standalone?:boolean}).standalone);
+  // iOS has no native install prompt. Include iPads using a desktop user agent.
+  const ios=/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+  const syncInstall=()=>{
+    install.hidden=installed||standalone()||(!prompt&&!ios);
+    setText(install,prompt?t("安装网页应用"):t("添加到主屏幕"));
+    if(install.hidden||prompt)guide.hidden=true;
+    if(ios&&!prompt){
+      install.setAttribute('aria-controls',guide.id);
+      install.setAttribute('aria-expanded',String(!guide.hidden));
+    } else {
+      install.removeAttribute('aria-controls');install.removeAttribute('aria-expanded');
+    }
+  };
+  syncInstall();
+  displayMode.addEventListener('change',syncInstall);
   window.addEventListener('beforeinstallprompt',event=>{
-    event.preventDefault();prompt=event as InstallPrompt;install.hidden=standalone();
+    event.preventDefault();prompt=event as InstallPrompt;syncInstall();
   });
-  window.addEventListener('appinstalled',()=>{prompt=undefined;install.hidden=true;});
+  window.addEventListener('appinstalled',()=>{prompt=undefined;installed=true;syncInstall();});
   install.onclick=async()=>{
-    if(!prompt)return;
+    if(!prompt){
+      if(ios&&!standalone()&&!installed){guide.hidden=!guide.hidden;install.setAttribute('aria-expanded',String(!guide.hidden));}
+      return;
+    }
     const current=prompt;prompt=undefined;install.hidden=true;
     try {await current.prompt();await current.userChoice;} catch {setText(status,t("请通过浏览器菜单安装网页应用。"));}
   };
@@ -86,4 +107,3 @@ export function setupPwa() {
   const ready=Promise.race([preparation,deadline]).finally(()=>clearTimeout(timeout));
   return {ready,gameStarted:fallback.gameStarted};
 }
-

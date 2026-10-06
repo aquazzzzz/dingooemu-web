@@ -18,6 +18,7 @@ const contour='M47 5H79Q82 5 82 8V41Q82 44 85 44H118Q121 44 121 47V79Q121 82 118
 const dpadFace=`<svg class="dpad-face" viewBox="0 0 126 126" aria-hidden="true"><defs><linearGradient id="dpad-face" x2=".8" y2="1"><stop stop-color="#557564"/><stop offset="1" stop-color="#263e32"/></linearGradient><clipPath id="dpad-clip"><path d="${contour}"/></clipPath>${([['Up',50,12],['Right',88,50],['Down',50,88],['Left',12,50]] as const).map(([dir,x,y])=>`<radialGradient id="dpad-glow-${dir}" cx="${x}%" cy="${y}%" r="58%"><stop stop-color="#b5ffd1" stop-opacity=".9"/><stop offset=".45" stop-color="#8debb0" stop-opacity=".36"/><stop offset="1" stop-color="#8debb0" stop-opacity="0"/></radialGradient>`).join('')}</defs><path d="${contour}" transform="translate(0 3)" fill="#18291f"/><path d="${contour}" fill="url(#dpad-face)" stroke="#a9c7b377" stroke-width="1.5"/><g clip-path="url(#dpad-clip)">${['Up','Right','Down','Left'].map(dir=>`<rect class="dpad-light light-${dir}" width="126" height="126" fill="url(#dpad-glow-${dir})"/>`).join('')}</g></svg>`;
 const app=document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML=`<main><header><div class="header-main"><div class="header-brand"><span class="eyebrow">POWERED BY <a href="https://github.com/libretro/RetroArch" target="_blank" rel="noopener noreferrer">RETROARCH</a> &amp; <a href="https://github.com/AloysHF/DingooEmu" target="_blank" rel="noopener noreferrer">DINGOOEMU</a></span><h1>DingooEmu Web</h1></div><div class="header-controls"><div class="language-placeholder" role="group" aria-label="界面语言"><div class="language-options"><button data-language="zh-CN" class="selected" aria-pressed="true" lang="zh-CN">中文</button><button data-language="en" aria-pressed="false" lang="en">English</button><button data-language="ja" aria-pressed="false" lang="ja">日本語</button></div></div><div class="pwa-actions"><button id="pwa-install" title="添加到设备，像应用一样打开。" hidden>安装网页应用</button><span id="pwa-status" role="status" aria-live="polite"></span></div></div></div><p class="header-description">丁果游戏模拟器 · 可添加到桌面／主屏幕 · 离线运行 · 即时存档</p></header>
+<section id="pwa-install-guide" class="pwa-install-guide" role="region" aria-label="添加到主屏幕" hidden><p>如果当前浏览器没有以下选项，请用 Safari 打开本站。</p><ol><li>点浏览器的“分享”按钮，选择“添加到主屏幕”。</li><li>如果出现“作为网页 App 打开”，保持开启，然后点“添加”。</li><li>从主屏幕上的 DingooEmu Web 图标打开，即可隐藏浏览器栏。</li></ol></section>
 <section class="workspace"><div id="game-stage" class="game-stage"><div class="screen-wrap"><canvas id="canvas" width="320" height="240" tabindex="0" aria-label="A320 画面"></canvas><output id="fps" class="fps" aria-label="模拟帧率">FPS -</output></div>
 <div id="touch" class="touch" hidden><button data-button="L" class="shoulder-left">L</button><button data-button="R" class="shoulder-right">R</button>
 <div data-dpad class="dpad" role="group" aria-label="十字方向键，支持多方向与滑动">${dpadFace}${(['Up','Down','Left','Right'] as const).map(direction=>`<span class="dpad-arm" data-direction="${direction}" aria-hidden="true"></span>`).join('')}</div>
@@ -34,7 +35,7 @@ app.innerHTML=`<main><header><div class="header-main"><div class="header-brand">
 <div class="position-setting"><button id="edit-control-layout" aria-pressed="false">调整按键位置</button><button id="reset-control-layout">恢复默认位置</button><small id="layout-help">调整时拖动十字键、各按键或全屏设置按钮，完成后保存。</small></div></section>
 <button id="exit-fullscreen" class="exit-fullscreen" hidden>退出全屏</button><span id="fullscreen-notice" class="fullscreen-notice" role="status"></span></div>
 <p id="status" role="status"></p>
-<div class="toolbar"><label class="file" title="支持 .app / .cc / .c2s / .c3s 和 ZIP 游戏包">导入游戏<input id="file" type="file" accept=".app,.cc,.c2s,.c3s,.zip"></label><!-- Folder import temporarily disabled. <label class="import-button">导入文件夹<input id="game-folder" type="file" webkitdirectory multiple></label> --><button id="run" disabled>继续</button><button id="reset" disabled>重置</button><button id="quick-save" disabled>即时存档</button><button id="quick-load" disabled>即时读档</button></div>
+<div class="toolbar"><label class="file" title="支持 .app / .cc / .c2s / .c3s 和 ZIP 游戏包">导入游戏<input id="file" type="file"></label><!-- Folder import temporarily disabled. <label class="import-button">导入文件夹<input id="game-folder" type="file" webkitdirectory multiple></label> --><button id="run" disabled>继续</button><button id="reset" disabled>重置</button><button id="quick-save" disabled>即时存档</button><button id="quick-load" disabled>即时读档</button></div>
 <div class="options"><span id="game-name"></span></div>
 <div id="import-choice" class="import-choice" hidden><label for="import-game">选择包内的游戏</label><select id="import-game"></select><button id="import-open">载入</button><button id="import-cancel">取消</button></div>
 <p id="snapshot-status" role="status" aria-live="polite"></p><p id="file-status" role="status" aria-live="polite"></p><details id="resources-details" hidden><summary>本次导入的资源</summary><p>资源随游戏保存在本机；添加或移除资源会重新载入游戏。</p><label class="import-button">添加资源<input id="resource-files" type="file" multiple></label><ul id="resource-list" class="managed-files"></ul></details>
@@ -205,8 +206,12 @@ async function importPackage(files:MountedFile[]) {
 }
 get<HTMLInputElement>('file').onchange=e=>{
   const chooser=e.target as HTMLInputElement,file=chooser.files?.[0];chooser.value='';if(!file)return;
-  pwa.gameStarted();void action(async()=>{
+  // iOS converts accept extensions to known system types and may exclude
+  // raw Dingoo games. Keep the picker unfiltered; validate before persisting.
+  void action(async()=>{
+    if(!isGame(file.name)&&!/\.zip$/i.test(file.name))throw new Error(t("请选择 .app / .cc / .c2s / .c3s 或 ZIP 文件。"));
     if(file.size>128*1024*1024)throw new Error(t("游戏或 ZIP 超过 128 MiB。"));
+    pwa.gameStarted();
     if(/\.zip$/i.test(file.name))await importPackage(await unzip(new Uint8Array(await file.arrayBuffer())));
     else await loadGame({name:file.name,game:file,resources:[]});
   });

@@ -43,9 +43,30 @@ export const messages:Record<string,readonly [string,string]> = {
   "DingooEmu 附带的第三方声明": ["Third-party notices included with DingooEmu", "DingooEmu に同梱の第三者の表記"],
   "上游文档列出了启用 JIT 的构建所使用的第三方组件；此处保留原始声明。": ["The upstream document lists third-party components used by JIT-enabled builds; its original notices are preserved here.", "元の文書には JIT を有効にしたビルドで使用される第三者のコンポーネントが記載されています。ここでは元の表記を保持しています。"],
   "支持 .app / .cc / .c2s / .c3s 和 ZIP 游戏包": ["Supports .app / .cc / .c2s / .c3s and ZIP game packages", ".app / .cc / .c2s / .c3s と ZIP ゲームパッケージに対応"],
+  "请选择 .app / .cc / .c2s / .c3s 或 ZIP 文件。": [
+    "Choose an .app / .cc / .c2s / .c3s or ZIP file.",
+    ".app / .cc / .c2s / .c3s、または ZIP ファイルを選択してください。"
+  ],
   "安装网页应用": [
     "Install web app",
     "Web アプリを追加"
+  ],
+  "添加到主屏幕": ["Add to Home Screen", "ホーム画面に追加"],
+  "如果当前浏览器没有以下选项，请用 Safari 打开本站。": [
+    "If these options are missing in your browser, open this site in Safari.",
+    "以下の項目がブラウザーにない場合は、Safari でこのサイトを開いてください。"
+  ],
+  "点浏览器的“分享”按钮，选择“添加到主屏幕”。": [
+    "Tap your browser's Share button, then choose Add to Home Screen.",
+    "ブラウザーの共有ボタンをタップし、「ホーム画面に追加」を選びます。"
+  ],
+  "如果出现“作为网页 App 打开”，保持开启，然后点“添加”。": [
+    "If Open as Web App appears, leave it enabled, then tap Add.",
+    "「Web アプリとして開く」が表示されたらオンのままにし、「追加」をタップします。"
+  ],
+  "从主屏幕上的 DingooEmu Web 图标打开，即可隐藏浏览器栏。": [
+    "Open DingooEmu Web from its Home Screen icon to hide the browser bars.",
+    "ホーム画面の DingooEmu Web アイコンから開くと、ブラウザーのバーが非表示になります。"
   ],
   "A320 画面": [
     "Game screen",
@@ -639,9 +660,9 @@ export const messages:Record<string,readonly [string,string]> = {
     "Could not exit fullscreen. Use the browser's fullscreen control.",
     "全画面を終了できませんでした。ブラウザーの全画面終了操作を使用してください。"
   ],
-  "当前为网页铺满模式，浏览器栏可能仍可见。": [
-    "Page fills the window; browser bars may remain visible.",
-    "ページを画面いっぱいに表示しています。ブラウザーのバーが残る場合があります。"
+  "浏览器未启用原生全屏，已改为铺满网页。": [
+    "Browser fullscreen is unavailable; the game fills the page instead.",
+    "ブラウザーの全画面表示を利用できないため、ページいっぱいに表示しています。"
   ],
   "未提供": [
     "Unavailable",

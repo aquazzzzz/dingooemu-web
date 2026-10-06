@@ -61,7 +61,11 @@ export class GameFullscreen {
     this.mode = mode; this.clearInput();
     this.root.classList.add('immersive');
     document.body.classList.add('game-fullscreen');
-    setText(this.notice,mode === 'page' ? t("当前为网页铺满模式，浏览器栏可能仍可见。") : '');
+    // Home Screen apps already omit browser bars even when iOS lacks the
+    // element Fullscreen API. Filling their viewport is the expected mode.
+    const standalone=matchMedia('(display-mode: standalone)').matches
+      ||Boolean((navigator as Navigator & {standalone?:boolean}).standalone);
+    setText(this.notice,mode === 'page'&&!standalone ? t("浏览器未启用原生全屏，已改为铺满网页。") : '');
     this.exitButton.hidden = false; this.revealExit(); this.fit();this.screen.focus({preventScroll:true});this.onChange();
   }
   private deactivate() {
