@@ -52,6 +52,23 @@ export const messages:Record<string,readonly [string,string]> = {
     "Web アプリを追加"
   ],
   "添加到主屏幕": ["Add to Home Screen", "ホーム画面に追加"],
+  "添加到程序坞": ["Add to Dock", "Dock に追加"],
+  "需要 macOS Sonoma 14 或更高版本。": [
+    "Requires macOS Sonoma 14 or later.",
+    "macOS Sonoma 14 以降が必要です。"
+  ],
+  "在 Safari 菜单栏选择“文件”→“添加到程序坞”，或在“共享”菜单中选择“添加到程序坞”。": [
+    "In the Safari menu bar, choose File → Add to Dock, or choose Add to Dock from the Share menu.",
+    "Safari のメニューバーで「ファイル」→「Dock に追加」を選ぶか、共有メニューから「Dock に追加」を選びます。"
+  ],
+  "确认名称后点“添加”。": [
+    "Confirm the name, then click Add.",
+    "名前を確認して「追加」をクリックします。"
+  ],
+  "从程序坞中的 DingooEmu Web 图标打开，即可在独立窗口中使用。": [
+    "Open DingooEmu Web from its Dock icon to use it in a separate window.",
+    "Dock の DingooEmu Web アイコンから開くと、独立したウインドウで使えます。"
+  ],
   "如果当前浏览器没有以下选项，请用 Safari 打开本站。": [
     "If these options are missing in your browser, open this site in Safari.",
     "以下の項目がブラウザーにない場合は、Safari でこのサイトを開いてください。"

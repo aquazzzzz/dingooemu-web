@@ -30,6 +30,8 @@ export function setupPwa() {
   const status=document.querySelector<HTMLElement>('#pwa-status')!;
   const install=document.querySelector<HTMLButtonElement>('#pwa-install')!;
   const guide=document.querySelector<HTMLElement>('#pwa-install-guide')!;
+  const homeGuide=guide.querySelector<HTMLElement>('[data-install-guide="ios"]')!;
+  const dockGuide=guide.querySelector<HTMLElement>('[data-install-guide="mac"]')!;
   let prompt:InstallPrompt|undefined;
   let installed=false;
   let gameStarted=false;
@@ -40,11 +42,20 @@ export function setupPwa() {
   const standalone=()=>displayMode.matches || Boolean((navigator as Navigator & {standalone?:boolean}).standalone);
   // iOS has no native install prompt. Include iPads using a desktop user agent.
   const ios=/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+  // Safari on Mac also uses a browser menu rather than beforeinstallprompt.
+  // Its macOS user agent does not reliably identify the installed OS version,
+  // so explain the macOS requirement in the guide rather than guessing it.
+  const macSafari=!ios&&/Mac/.test(navigator.platform||navigator.userAgent)
+    &&/Version\/[\d.]+.*Safari\//.test(navigator.userAgent)
+    &&!/Chrome|Chromium|Edg\/|OPR\//.test(navigator.userAgent);
+  const manualInstall=ios||macSafari;
   const syncInstall=()=>{
-    install.hidden=installed||standalone()||(!prompt&&!ios);
-    setText(install,prompt?t("安装网页应用"):t("添加到主屏幕"));
+    install.hidden=installed||standalone()||(!prompt&&!manualInstall);
+    setText(install,prompt?t("安装网页应用"):macSafari?t("添加到程序坞"):t("添加到主屏幕"));
+    homeGuide.hidden=!ios;
+    dockGuide.hidden=!macSafari;
     if(install.hidden||prompt)guide.hidden=true;
-    if(ios&&!prompt){
+    if(manualInstall&&!prompt){
       install.setAttribute('aria-controls',guide.id);
       install.setAttribute('aria-expanded',String(!guide.hidden));
     } else {
@@ -59,7 +70,7 @@ export function setupPwa() {
   window.addEventListener('appinstalled',()=>{prompt=undefined;installed=true;syncInstall();});
   install.onclick=async()=>{
     if(!prompt){
-      if(ios&&!standalone()&&!installed){guide.hidden=!guide.hidden;install.setAttribute('aria-expanded',String(!guide.hidden));}
+      if(manualInstall&&!standalone()&&!installed){guide.hidden=!guide.hidden;install.setAttribute('aria-expanded',String(!guide.hidden));}
       return;
     }
     const current=prompt;prompt=undefined;install.hidden=true;
