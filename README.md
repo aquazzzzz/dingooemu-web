@@ -1,5 +1,7 @@
 # DingooEmu Web
 
+[访问网站 / Open website](https://aquazzzzz.github.io/dingooemu-web/)
+
 ## 中文
 
 ### 网站简介
