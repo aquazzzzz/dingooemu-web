@@ -21,24 +21,24 @@
       "sha256": "469faa8457ffed7428f1c150f4d8682ce25f2d991a694eec544e661f43452f50"
     },
     "runtime/audioworklet/dingooemu_libretro.js": {
-      "bytes": 358208,
-      "sha256": "896c1b391c1e39f9d43ee04e7f8fa5d764352413cf24340cf0f7a3367fa73f21"
+      "bytes": 366724,
+      "sha256": "96f9971c2b4ca158118861be334b6f29f24b25b21d2b63b726d15aca7f9fa1e6"
     },
     "runtime/audioworklet/dingooemu_libretro.wasm": {
-      "bytes": 3795567,
-      "sha256": "2395783f4135ca997ac6d2b2bce22159cda3756752bc694b08fb5771d382145e"
+      "bytes": 3829763,
+      "sha256": "d985bfe9975f01b76acc2bf8ab505485ffda1912764aea356d074f140bf30676"
     },
     "runtime/dingooemu_libretro.info": {
       "bytes": 782,
       "sha256": "ef27ab93fc126d655d587722faf9791c5d84652ee600f3b6ee5bdee706845080"
     },
     "runtime/dingooemu_libretro.js": {
-      "bytes": 305526,
-      "sha256": "5b5e95af61edee45dd2281312aa9cff707580818d1a9dbb5a9f65354da58da56"
+      "bytes": 313942,
+      "sha256": "71ecfa231445b47e6e9928bf04453dca3eb85d89f6bc9c9b3e4b231169d74150"
     },
     "runtime/dingooemu_libretro.wasm": {
-      "bytes": 3649838,
-      "sha256": "5c7a13a14894a701d766324d3213feb4a956d37db2cca9f2d22fc826bf248ec5"
+      "bytes": 3673086,
+      "sha256": "d30f4c5eed8ab0bf61d2313156441d82aeac8149b6d4318b9700ec700682d9a0"
     },
     "runtime/font.ttf": {
       "bytes": 4474312,
@@ -47,6 +47,38 @@
     "runtime/retroarch.png": {
       "bytes": 4068,
       "sha256": "6e15174de2ca83eaacccc5b3ba1d76d64c8a181182a73815a1fa07ec57678276"
+    },
+    "runtime/worker/dingooemu_libretro.js": {
+      "bytes": 374692,
+      "sha256": "0c1be7bd85f89c6943e206110636ed20cdc9a0bf7b3b37a2a16f1b627d4c360b"
+    },
+    "runtime/worker/dingooemu_libretro.wasm": {
+      "bytes": 3831724,
+      "sha256": "8e6ed26ccd4d2a6f2d9bfdefa1ddbc24dbcb071ada48876f18545083018bbdaa"
+    }
+  },
+  "runtime_build": {
+    "baseline_git_commit": "df676e14c4f14f5512693af0a6e653185473541d",
+    "core_and_bridge_source_sha256": "962483f06e2467b1a1d4fe81231ef36d9b8f9b2a70c34de886cdf50e7ee7c6e9",
+    "features": [
+      "wasm-jit"
+    ],
+    "core_worker": {
+      "enabled_by_default_when_supported": true,
+      "requires": [
+        "AudioWorklet",
+        "SharedArrayBuffer isolation",
+        "Worker WebGL / OffscreenCanvas"
+      ],
+      "fallback": "Existing main-thread runtime on missing features or startup failure",
+      "audio_buffer_default_ms": 64
+    },
+    "experimental_wasm_jit": {
+      "abi": 4,
+      "enabled_by_default": true,
+      "live_switch": "Page selector; preserves guest state; runs on the owning core thread",
+      "scope": "A320 integer/MUL and bounded RAM/framebuffer prefixes; terminal BEQ/BNE delay pairs and bounded single-store self-loops",
+      "validation": "See docs/wasm-jit-ui.md for live-switch checks, docs/wasm-jit-framebuffer-install.md for initial adoption, and docs/wasm-jit-framebuffer.md for measured performance"
     }
   }
 }

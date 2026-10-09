@@ -652,8 +652,8 @@ double audioworklet_base_latency_ms(void)
    audioworklet_data_t *audio = audioworklet_static_data;
    if (!audio || !audio->context)
       return -1.0;
-   return EM_ASM_DOUBLE({
-      var value = emscriptenGetAudioObject($0).baseLatency;
+   return MAIN_THREAD_EM_ASM_DOUBLE({
+      var value = emscriptenGetAudioObject($0)?.baseLatency;
       return Number.isFinite(value) ? value * 1000 : -1;
    }, audio->context);
 }
@@ -663,8 +663,8 @@ double audioworklet_output_latency_ms(void)
    audioworklet_data_t *audio = audioworklet_static_data;
    if (!audio || !audio->context)
       return -1.0;
-   return EM_ASM_DOUBLE({
-      var value = emscriptenGetAudioObject($0).outputLatency;
+   return MAIN_THREAD_EM_ASM_DOUBLE({
+      var value = emscriptenGetAudioObject($0)?.outputLatency;
       return Number.isFinite(value) ? value * 1000 : -1;
    }, audio->context);
 }

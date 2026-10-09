@@ -3,6 +3,12 @@ import {sha256} from './hash';
 export interface MountedFile {path:string;bytes:Uint8Array}
 export interface GameRecord {hash:string;name:string;revision:number;updatedAt:number;size:number;count:number;deleted?:boolean}
 export interface GamePackage {hash:string;name:string;game:Blob;resources:MountedFile[]}
+// Fallback for browsers that cannot persist Blob/File backing data in IndexedDB.
+interface StoredGamePackage {hash:string;name:string;game:ArrayBuffer;gameType:string;resources:MountedFile[];encoding:'bytes-v1'}
+function blobStorageError(error:unknown):boolean {
+  if(!(error instanceof DOMException))return false;
+  return error.name==='DataCloneError'||(error.name==='UnknownError'&&/\bblob\b/i.test(error.message)&&/prepar|stor|serial|clon/i.test(error.message));
+}
 export interface PackageRecord {hash:string;name:string;size:number;updatedAt:number}
 export const MAX_SAVE_BYTES=64*1024*1024,MAX_FILES=2048;
 export function path(value:string):string {
@@ -46,14 +52,26 @@ export class SaveStore {
   }
   async savePackage(value:GamePackage) {
     validateFiles(value.resources);if(!/^[a-f0-9]{64}$/.test(value.hash)||value.game.size+value.resources.reduce((n,f)=>n+f.bytes.length,0)>128*1024*1024)throw new Error(t("游戏包无效或超过 128 MiB。"));
+    const size=value.game.size+value.resources.reduce((n,f)=>n+f.bytes.length,0);
+    try {await this.writePackage(value,size);return;}catch(error){if(!blobStorageError(error))throw error;}
+    // The Blob transaction has aborted. Read bytes before opening a fresh one.
+    const stored:StoredGamePackage={hash:value.hash,name:value.name,game:await value.game.arrayBuffer(),gameType:value.game.type,resources:value.resources,encoding:'bytes-v1'};
+    await this.writePackage(stored,size);
+  }
+  private async writePackage(value:GamePackage|StoredGamePackage,size:number) {
     const db=await this.db();return new Promise<void>((resolve,reject)=>{
       const tx=db.transaction(['packages','package-meta'],'readwrite');let error:unknown;
-      try {tx.objectStore('packages').put(value);tx.objectStore('package-meta').put({hash:value.hash,name:value.name,size:value.game.size+value.resources.reduce((n,f)=>n+f.bytes.length,0),updatedAt:Date.now()});}catch(cause){error=cause;tx.abort();}
-      tx.oncomplete=()=>resolve();tx.onabort=()=>reject(error||tx.error);
+      // Preserve the request error: an aborted transaction may only expose AbortError.
+      tx.onerror=event=>{error??=(event.target as IDBRequest).error;};
+      tx.oncomplete=()=>resolve();tx.onabort=()=>reject(error||tx.error||new Error(t("保存事务中止。")));
+      try {tx.objectStore('packages').put(value);tx.objectStore('package-meta').put({hash:value.hash,name:value.name,size,updatedAt:Date.now()});}catch(cause){error=cause;tx.abort();}
     });
   }
   async loadPackage(hash:string):Promise<GamePackage|undefined> {
-    const db=await this.db();return new Promise((resolve,reject)=>{const req=db.transaction('packages').objectStore('packages').get(hash);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});
+    const db=await this.db();return new Promise((resolve,reject)=>{const req=db.transaction('packages').objectStore('packages').get(hash);req.onsuccess=()=>{
+      const value:GamePackage|StoredGamePackage|undefined=req.result;
+      resolve(value&&'encoding' in value&&value.encoding==='bytes-v1'?{hash:value.hash,name:value.name,game:new Blob([value.game],{type:value.gameType}),resources:value.resources}:value as GamePackage|undefined);
+    };req.onerror=()=>reject(req.error);});
   }
   async listPackages():Promise<PackageRecord[]> {
     const db=await this.db();return new Promise((resolve,reject)=>{const req=db.transaction('package-meta').objectStore('package-meta').getAll();req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});

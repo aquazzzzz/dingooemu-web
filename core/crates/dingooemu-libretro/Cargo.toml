@@ -17,6 +17,10 @@ crate-type = ["staticlib"]
 [dependencies]
 log.workspace = true
 
+[features]
+wasm-jit = ["dingooemu-core/wasm-jit"]
+wasm-jit-profile = ["wasm-jit", "dingooemu-core/wasm-jit-profile"]
+
 # The JIT needs a 64-bit host with executable memory and a Cranelift-native
 # backend. Apple mobile platforms (iOS, tvOS, watchOS) forbid runtime code
 # generation, and 32-bit targets have no Cranelift-native backend, so those

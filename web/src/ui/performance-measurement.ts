@@ -14,6 +14,8 @@ const number=(value:number|null,digits=2)=>value===null||value<0?t("未提供"):
 
 export class PerformanceMeasurement {
   private session?:Session;
+  private pending=false;
+  private finishing?:Promise<void>;
   private result?:Result;
   private timer?:ReturnType<typeof setInterval>;
   private deadline?:ReturnType<typeof setTimeout>;
@@ -37,17 +39,20 @@ export class PerformanceMeasurement {
 
   refresh() {
     if(this.session&&!this.canRecord())this.finish('游戏暂停、重置、切换或结束，测量提前结束');
-    this.start.disabled=Boolean(this.session)||!this.canRecord();
+    this.start.disabled=this.pending||Boolean(this.session)||!this.canRecord();
     this.stop.hidden=!this.session;
-    this.note.disabled=Boolean(this.session);
-    this.mode.disabled=Boolean(this.session);
+    this.note.disabled=this.pending||Boolean(this.session);
+    this.mode.disabled=this.pending||Boolean(this.session);
   }
 
-  cancel(reason:string) {if(this.session)this.finish(reason);}
+  async cancel(reason:string) {if(this.session)await this.finish(reason);else await this.finishing;}
 
-  private begin() {
-    if(!this.canRecord()||this.session)return;
-    try {this.client.beginMeasurement(this.mode.value==='full'?'full':'light');}catch(error){setText(this.status,String(error));return;}
+  private async begin() {
+    if(!this.canRecord()||this.session||this.pending)return;
+    this.pending=true;this.refresh();
+    try {await this.client.beginMeasurement(this.mode.value==='full'?'full':'light');}catch(error){this.pending=false;this.refresh();setText(this.status,String(error));return;}
+    this.pending=false;
+    if(!this.canRecord()){await this.client.endMeasurement();this.refresh();return;}
     const start=performance.now();
     this.session={start,previous:start,previousFrames:0,baseline:this.client.audioSnapshot(),rows:[],game:this.game(),note:this.note.value.trim(),environment:this.client.measurementEnvironment(),view:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio,standalone:matchMedia('(display-mode: standalone)').matches,userAgent:navigator.userAgent}};
     this.result=undefined;
@@ -72,20 +77,23 @@ export class PerformanceMeasurement {
     session.previous=now;session.previousFrames=frames;
   }
 
-  private finish(reason:string) {
+  private finish(reason:string):Promise<void> {
+    if(this.finishing)return this.finishing;
+    this.finishing=this.finishNow(reason).finally(()=>{this.finishing=undefined;});return this.finishing;
+  }
+  private async finishNow(reason:string) {
     const session=this.session;if(!session)return;
     clearInterval(this.timer);clearTimeout(this.deadline);
     this.sample();
-    const elapsed=(performance.now()-session.start)/1000;
-    this.session=undefined;
+    this.session=undefined;this.pending=true;this.refresh();
     try {
-      const frames=this.client.endMeasurement(),final=this.client.audioSnapshot();
+      const frames=await this.client.endMeasurement(),final=this.client.audioSnapshot(),elapsed=(performance.now()-session.start)/1000;
       reason=messageKey(reason);
       this.result={session,elapsed,frames,final,reason,time:new Date().toISOString()};
       this.showResult(this.result);
       setText(this.status,t("{0} · 已记录 {1} 秒，可复制报告或截图",reason==='完成'?t("测量完成"):t(reason),elapsed.toFixed(1)));
     } catch(error) {setText(this.status,String(error));}
-    this.refresh();
+    this.pending=false;this.refresh();
   }
 
   private showResult(result:Result) {
@@ -118,6 +126,7 @@ export class PerformanceMeasurement {
       t("浏览器：{0}",view.userAgent),
       t("页面：{0}×{1} · DPR {2} · {3}",view.width,view.height,view.dpr,view.standalone?t("独立应用窗口"):t("浏览器窗口")),
       t("安全上下文：{0} · 共享内存隔离：{1} · 声音 {2} · 缓冲目标 {3} ms",environment.secure?t("开启"):t("关闭"),environment.isolated?t("开启"):t("关闭"),environment.audioDriver,environment.audioLatency),
+      t("核心运行：{0}",environment.coreWorker?t("Worker"):t("主线程")),
       '',
       t("模拟帧数：{0} · 平均 {1} FPS",frames.frames,number(frames.frames/Math.max(elapsed,0.001))),
       t("游戏指令数：{0} · 每模拟帧平均 {1}",frames.instructions,number(frames.instructions/Math.max(frames.frames,1),0)),
@@ -136,7 +145,9 @@ export class PerformanceMeasurement {
       frames.frames?t("计数为实际模拟帧，不等同于屏幕刷新率。"):t("没有采集到模拟帧，请确认游戏运行后重新测量。"),
       t("P95 表示 95% 的样本不超过该耗时。画面提交为 CPU 侧耗时，未包含 GPU 完成和屏幕显示。"),
       t("缺样按音频处理周期计数，不等同于爆音次数；设备输出为浏览器估计，未测量按键或蓝牙端到端延迟。"),
-      frames.mode==='full'?t("采集仅在本机进行；逐帧计时有额外开销。游戏核心仍使用解释器。"):t("采集仅在本机进行；每秒读取已有计数，未启用逐帧计时。游戏核心仍使用解释器。"),
+      environment.wasmJit
+        ?t("执行模式：Wasm JIT 实验（A320 部分整数指令；其余回退解释器）。")+'\n'+t("采集仅在本机进行；详细模式包含逐帧计时开销，轻量模式只读取计数。")
+        :(frames.mode==='full'?t("采集仅在本机进行；逐帧计时有额外开销。游戏核心仍使用解释器。"):t("采集仅在本机进行；每秒读取已有计数，未启用逐帧计时。游戏核心仍使用解释器。")),
       frames.truncated?t("计时样本达到上限，分位数只覆盖前 4096 帧。"):'',
       '',
       t("逐段记录（累计秒 | FPS | 核心积压 ms | 输出队列 ms | 累计缺样）"),

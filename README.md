@@ -10,9 +10,9 @@
 
 DingooEmu Web 在浏览器中运行丁果 A320（Dingoo A320）和歌美 A330（Gemei A330）掌机的原生游戏与应用。支持导入 A320 的 `.app` 和 A330 的 `.cc`、`.c2s`、`.c3s` 文件，也支持 ZIP 游戏包。
 
-网站支持中文、English、日本語，可安装为网页应用，并提供离线运行、游戏管理与即时存档。游戏由您从本机导入，本仓库不包含游戏。
+本站基于 RetroArch 的 WebAssembly 运行环境，让 DingooEmu 核心在浏览器中运行，并提供网页操作界面。
 
-本站提供网页操作界面，并通过 RetroArch 的 WebAssembly 运行环境调用 DingooEmu 模拟核心。
+网站支持中文、English、日本語，可安装为网页应用，并提供离线运行、游戏管理与即时存档。游戏由您从本机导入，本仓库不包含游戏。
 
 ### 目录结构
 
@@ -23,7 +23,8 @@ dingooemu-web/
 │   ├── src/                       # 界面、样式、翻译、游戏管理与运行器
 │   ├── public/                    # 静态资源
 │   │   ├── runtime/               # Wasm、JavaScript、字体与运行资源
-│   │   │   └── audioworklet/       # AudioWorklet 音频运行版本
+│   │   │   ├── audioworklet/       # AudioWorklet 音频运行版本
+│   │   │   └── worker/             # 完整模拟核心 Worker 版本
 │   │   ├── devices/               # 掌机图片
 │   │   ├── icons/                 # PWA 图标
 │   │   └── licenses/              # 网站许可页面使用的许可文本
@@ -60,9 +61,9 @@ dingooemu-web/
 
 DingooEmu Web runs native games and applications for the Dingoo A320 and Gemei A330 handhelds in the browser. It supports A320 `.app` files, A330 `.cc`, `.c2s`, and `.c3s` files, as well as ZIP game packages.
 
-The website supports Chinese, English, and Japanese. It can be installed as a web app and provides offline operation, game management, and save states. You import games from your own device; this repository does not include games.
+This site uses RetroArch's WebAssembly runtime to run the DingooEmu core in the browser and provides a web interface for controlling it.
 
-This site provides a web interface and uses RetroArch's WebAssembly runtime to run the DingooEmu emulation core.
+The website supports Chinese, English, and Japanese. It can be installed as a web app and provides offline operation, game management, and save states. You import games from your own device; this repository does not include games.
 
 ### Project structure
 
@@ -73,7 +74,8 @@ dingooemu-web/
 │   ├── src/                       # UI, styles, translations, game management, and runner
 │   ├── public/                    # Static assets
 │   │   ├── runtime/               # Wasm, JavaScript, fonts, and runtime assets
-│   │   │   └── audioworklet/       # AudioWorklet runtime variant
+│   │   │   ├── audioworklet/       # AudioWorklet runtime variant
+│   │   │   └── worker/             # Full-core Worker runtime variant
 │   │   ├── devices/               # Handheld images
 │   │   ├── icons/                 # PWA icons
 │   │   └── licenses/              # License texts used by the website
@@ -110,9 +112,9 @@ dingooemu-web/
 
 DingooEmu Web は、Dingoo A320 と Gemei A330 向けのネイティブゲームやアプリケーションをブラウザーで実行します。A320 の `.app` ファイル、A330 の `.cc`、`.c2s`、`.c3s` ファイル、および ZIP 形式のゲームパッケージに対応しています。
 
-サイトは中国語、英語、日本語に対応し、Web アプリとしてインストールできます。オフラインでの実行、ゲーム管理、ステートセーブ機能を備えています。ゲームはお使いの端末からインポートしてください。このリポジトリにゲームは含まれていません。
+このサイトは RetroArch の WebAssembly 実行環境を利用して DingooEmu コアをブラウザー上で動作させ、Web ベースの操作画面を提供しています。
 
-このサイトは Web ベースの操作画面を提供し、RetroArch の WebAssembly 実行環境を通じて DingooEmu のエミュレーションコアを利用しています。
+サイトは中国語、英語、日本語に対応し、Web アプリとしてインストールできます。オフラインでの実行、ゲーム管理、ステートセーブ機能を備えています。ゲームはお使いの端末からインポートしてください。このリポジトリにゲームは含まれていません。
 
 ### ディレクトリ構成
 
@@ -123,7 +125,8 @@ dingooemu-web/
 │   ├── src/                       # UI、スタイル、翻訳、ゲーム管理、実行処理
 │   ├── public/                    # 静的リソース
 │   │   ├── runtime/               # Wasm、JavaScript、フォント、実行用リソース
-│   │   │   └── audioworklet/       # AudioWorklet 音声実行版
+│   │   │   ├── audioworklet/       # AudioWorklet 音声実行版
+│   │   │   └── worker/             # コア全体の Worker 実行版
 │   │   ├── devices/               # 携帯ゲーム機の画像
 │   │   ├── icons/                 # PWA アイコン
 │   │   └── licenses/              # サイトのライセンスページで使用する本文

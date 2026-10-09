@@ -2917,7 +2917,7 @@ bool runloop_environment_cb(unsigned cmd, void *data)
       }
 
       case RETRO_ENVIRONMENT_SET_AUDIO_CALLBACK:
-#if defined(HAVE_THREADS) && (!defined(__EMSCRIPTEN__) || defined(PROXY_TO_PTHREAD))
+#if defined(HAVE_THREADS) && (!defined(__EMSCRIPTEN__) || (defined(PROXY_TO_PTHREAD) && !defined(DINGOO_CORE_WORKER)))
       {
          recording_state_t *rec_st   = recording_state_get_ptr();
          audio_driver_state_t
