@@ -166,6 +166,24 @@ impl Cpu {
         self.instruction_count += count;
     }
 
+    /// Explicit ABI-3 branch fields; keep private serialization layout unchanged.
+    #[cfg(feature = "wasm-jit")]
+    pub(crate) fn wasm_jit_branch_state(&self) -> (u32, u32, u32) {
+        (
+            u32::from(self.branch_delay),
+            self.branch_target,
+            u32::from(self.branch_delay_pending),
+        )
+    }
+
+    #[cfg(feature = "wasm-jit")]
+    pub(crate) fn commit_wasm_jit_branch_state(&mut self, delay: u32, target: u32, pending: u32) {
+        debug_assert!(delay <= 1 && pending <= 1);
+        self.branch_delay = delay != 0;
+        self.branch_target = target;
+        self.branch_delay_pending = pending != 0;
+    }
+
     /// Take a branch (sets delay slot)
     fn branch(&mut self, offset: i32) {
         // Calculate branch target: PC + (offset << 2)

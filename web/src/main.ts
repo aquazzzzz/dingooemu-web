@@ -33,8 +33,8 @@ app.innerHTML=`<main><header><div class="header-main"><div class="header-brand">
 <label class="fps-setting"><input id="fps-enabled" type="checkbox"> 显示 FPS</label><label class="mute-setting"><input id="audio-muted" type="checkbox"> 静音</label></div>
 <div class="opacity-setting"><label for="touch-opacity">虚拟按键不透明度</label><input id="touch-opacity" type="range" min="0" max="100" step="5" value="100"><output id="touch-opacity-value" for="touch-opacity">100%</output><small>0% 外观不可见；关闭虚拟手柄可停用游戏触摸操作。</small></div>
 <div class="opacity-setting"><label for="settings-opacity">设置按钮透明度</label><input id="settings-opacity" type="range" min="0" max="100" step="5" value="100"><output id="settings-opacity-value" for="settings-opacity">100%</output></div>
-<div class="display-setting"><button id="display-options-toggle" aria-expanded="false" aria-controls="display-options">画面显示</button><span id="display-current">平滑显示</span><fieldset id="display-options" hidden><legend>显示模式</legend><label><input type="radio" name="display-mode" value="pixel"> 原始像素</label><small>保留清晰的像素边缘，画面等比铺满。</small><label><input type="radio" name="display-mode" value="smooth" checked> 平滑显示</label><small>柔化放大后的像素边缘，文字可能略模糊。</small><!-- Integer scaling temporarily disabled. <label><input type="radio" name="display-mode" value="integer"> 整数倍缩放</label><small>按屏幕像素整数倍显示，画面可能变小并留黑边；空间不足时等比缩小。</small> --></fieldset><small id="display-error" role="status" aria-live="polite"></small></div>
-<div class="audio-recovery"><button id="audio-enable" hidden>启用声音</button><small id="audio-status" role="status"></small></div>
+<div class="display-setting"><button id="display-options-toggle" aria-expanded="false" aria-controls="display-options">画面显示</button><span id="display-current">平滑显示</span><label class="jit-setting" for="jit-toggle">JIT(A320） <select id="jit-toggle" title="立即切换 JIT，保留当前进度。"><option value="1" selected>开启</option><option value="0">关闭</option></select></label><span class="audio-buffer-group"><label class="audio-buffer-setting" for="audio-buffer">音频缓冲 <select id="audio-buffer" aria-describedby="audio-buffer-note"><option value="32">32 ms</option><option value="48">48 ms</option><option value="64" selected>64 ms</option><option value="96">96 ms</option><option value="128">128 ms</option></select></label><small id="audio-buffer-note">下次启动生效</small></span><fieldset id="display-options" hidden><legend>显示模式</legend><label><input type="radio" name="display-mode" value="pixel"> 原始像素</label><small>保留清晰的像素边缘，画面等比铺满。</small><label><input type="radio" name="display-mode" value="smooth" checked> 平滑显示</label><small>柔化放大后的像素边缘，文字可能略模糊。</small><!-- Integer scaling temporarily disabled. <label><input type="radio" name="display-mode" value="integer"> 整数倍缩放</label><small>按屏幕像素整数倍显示，画面可能变小并留黑边；空间不足时等比缩小。</small> --></fieldset><small id="display-error" role="status" aria-live="polite"></small></div>
+<div class="audio-recovery"><button id="audio-enable" hidden>启用声音</button><small class="runtime-status"><span id="audio-status" role="status"></span> · <span id="jit-status" role="status" aria-live="off"></span></small></div>
 <div class="position-setting"><button id="edit-control-layout" aria-pressed="false">调整按键位置</button><button id="reset-control-layout">恢复默认位置</button><small id="layout-help">调整时拖动十字键、各按键或全屏设置按钮，完成后保存。</small></div></section>
 <button id="exit-fullscreen" class="exit-fullscreen" hidden>退出全屏</button><span id="fullscreen-notice" class="fullscreen-notice" role="status"></span></div>
 <p id="status" role="status"></p>
@@ -48,7 +48,7 @@ app.innerHTML=`<main><header><div class="header-main"><div class="header-brand">
 <details open><summary>运行测量</summary><pre id="metrics">等待首帧。</pre><pre id="audio-metrics"></pre>
 <div class="measurement-tools"><label for="measure-note">设备 / 场景备注（可选）</label><input id="measure-note" maxlength="160"><label for="measure-mode">测量模式</label><select id="measure-mode"><option value="light">轻量：帧率和音频（推荐）</option><option value="full">详细：包含每帧核心耗时</option></select><div class="measurement-buttons"><button id="measure-start" disabled>测量 30 秒</button><button id="measure-stop" hidden>提前结束</button><button id="measure-copy" disabled>复制报告</button></div><p id="measure-status" role="status" aria-live="polite">进入卡顿场景后点击测量，期间可以正常操作游戏。</p><output id="measure-summary" hidden aria-label="测量摘要"></output><textarea id="measure-report" readonly hidden rows="16" aria-label="性能测量报告" spellcheck="false"></textarea></div></details>
 -->
-<section class="site-about" aria-label="关于本站"><div class="about-copy"><p>DingooEmu Web 在浏览器中运行丁果 A320（Dingoo A320）和歌美 A330（Gemei A330）掌机的原生游戏与应用。</p><p class="about-formats">支持导入 A320 的 .app 和 A330 的 .cc、.c2s、.c3s 文件，也支持 ZIP 游戏包。</p><p>本站提供网页操作界面，并通过 RetroArch 的 WebAssembly 运行环境调用 DingooEmu 模拟核心。</p></div><div class="about-devices"><figure><div class="device-photo device-photo--a320"><img src="${import.meta.env.BASE_URL}devices/dingoo-a320.png" width="1060" height="402" alt="丁果 A320 掌机" loading="lazy" decoding="async"></div><figcaption>Dingoo A320</figcaption></figure><figure><div class="device-photo device-photo--a330"><img src="${import.meta.env.BASE_URL}devices/gemei-a330-transparent.png" width="1774" height="887" alt="歌美 A330 掌机" loading="lazy" decoding="async"></div><figcaption>Gemei A330</figcaption></figure></div></section>
+<section class="site-about" aria-label="关于本站"><div class="about-copy"><p>DingooEmu Web 在浏览器中运行丁果 A320（Dingoo A320）和歌美 A330（Gemei A330）掌机的原生游戏与应用。</p><p class="about-formats">支持导入 A320 的 .app 和 A330 的 .cc、.c2s、.c3s 文件，也支持 ZIP 游戏包。</p><p>本站基于 RetroArch 的 WebAssembly 运行环境，让 DingooEmu 核心在浏览器中运行，并提供网页操作界面。</p></div><div class="about-devices"><figure><div class="device-photo device-photo--a320"><img src="${import.meta.env.BASE_URL}devices/dingoo-a320.png" width="1060" height="402" alt="丁果 A320 掌机" loading="lazy" decoding="async"></div><figcaption>Dingoo A320</figcaption></figure><figure><div class="device-photo device-photo--a330"><img src="${import.meta.env.BASE_URL}devices/gemei-a330-transparent.png" width="1774" height="887" alt="歌美 A330 掌机" loading="lazy" decoding="async"></div><figcaption>Gemei A330</figcaption></figure></div></section>
 <footer class="site-footer"><div><span>模拟核心：</span><a href="https://github.com/AloysHF/DingooEmu" target="_blank" rel="noopener noreferrer">DingooEmu</a> · AloysHF · <a href="licenses.html#dingooemu">BSD 3-Clause</a></div><div><span>运行环境：</span><a href="https://github.com/libretro/RetroArch" target="_blank" rel="noopener noreferrer">RetroArch</a> · <a href="licenses.html#retroarch">GPL-3.0-or-later</a></div><nav class="footer-links" aria-label="项目链接"><a data-site-source hidden target="_blank" rel="noopener noreferrer">本站源码</a><a href="licenses.html">开源许可与第三方声明</a></nav><p>游戏由您从本机导入。游戏文件、游戏内存档与即时存档保存在当前浏览器中，可通过本站导出备份。</p></footer></main>`;
 setupSourceLink(app);
 setupLanguages(app);
@@ -81,7 +81,7 @@ const fileManager=new FileManager(get<HTMLDetailsElement>('file-manager'),saveSt
     try {
       await pwa.prepared;
       clearInput();keyboard.setBlocked(true);
-      measurement?.cancel(t("游戏暂停、重置、切换或结束，测量提前结束"));
+      await measurement?.cancel(t("游戏暂停、重置、切换或结束，测量提前结束"));
       await client.request('discard');
       loaded=false;activeGame=undefined;pendingFiles=undefined;snapshotIdentity=undefined;
       get('game-name').textContent='';renderResources();setPlayback('stopped','');
@@ -101,8 +101,8 @@ const fileManager=new FileManager(get<HTMLDetailsElement>('file-manager'),saveSt
 });
 const snapshotManager=new SnapshotManager(get<HTMLDetailsElement>('snapshot-manager'),snapshotStore,{
   operate:action,current:()=>loaded&&client.fileIdentity?snapshotIdentity:undefined,
-  capture:async save=>{clearInput();measurement?.cancel(t("保存即时存档，测量已结束"));await client.captureSnapshot(save);},
-  restore:async snapshot=>{clearInput();measurement?.cancel(t("读取即时存档，测量已结束"));await client.restoreSnapshot(snapshot);setPlayback('running',t("即时读档完成，游戏已继续运行。"));await fileManager.refresh(snapshot.meta.game);},
+  capture:async save=>{clearInput();await measurement?.cancel(t("保存即时存档，测量已结束"));await client.captureSnapshot(save);},
+  restore:async snapshot=>{clearInput();await measurement?.cancel(t("读取即时存档，测量已结束"));await client.restoreSnapshot(snapshot);setPlayback('running',t("即时读档完成，游戏已继续运行。"));await fileManager.refresh(snapshot.meta.game);},
 },get<HTMLButtonElement>('quick-save'),get<HTMLButtonElement>('quick-load'),get('snapshot-status'));
 client.onFileStatus=(message,failed)=>{setText(get('file-status'),message);get('file-status').classList.toggle('file-error',failed);};
 // Uncomment the measurement markup above to restore this controller.
@@ -152,26 +152,47 @@ type DisplayMode='pixel'|'smooth'|'integer';
 let displayMode:DisplayMode='smooth';
 try {const saved=localStorage.getItem(storagePrefix+'display');if(saved==='pixel'||saved==='smooth')displayMode=saved;}catch{}
 const displayLabels:Record<DisplayMode,string>={pixel:'原始像素',smooth:'平滑显示',integer:'整数倍缩放'};
-function applyDisplay() {
-  client.setVideoSmooth(displayMode==='smooth');
+async function applyDisplay() {
+  await client.setVideoSmooth(displayMode==='smooth');
   canvas.style.imageRendering=displayMode==='smooth'?'auto':'pixelated';
   fullscreen.setIntegerScale(displayMode==='integer');
   setText(get('display-current'),t(displayLabels[displayMode]));
   get('display-options').querySelectorAll<HTMLInputElement>('input').forEach(radio=>radio.checked=radio.value===displayMode);
 }
-applyDisplay();
+void applyDisplay();
+const jitToggle=get<HTMLSelectElement>('jit-toggle');
+function renderJit() {
+  const value=client.jitChoice?'1':'0';
+  if(jitToggle.value!==value)jitToggle.value=value;
+  const notice=client.jitNotice,status=get('jit-status');
+  if(status.textContent!==notice)setText(status,notice);
+  const disabled=busy||!client.jitSwitchSupported;
+  if(jitToggle.disabled!==disabled)jitToggle.disabled=disabled;
+}
+renderJit();
+jitToggle.onchange=()=>{
+  const enabled=jitToggle.value==='1';
+  void action(async()=>{
+    clearInput();await measurement?.cancel(t("切换 JIT，测量已结束"));
+    try {await client.setJitEnabled(enabled);}finally{renderJit();}
+  });
+};
+const audioBuffer=get<HTMLSelectElement>('audio-buffer');audioBuffer.value=String(client.audioBuffer);
+audioBuffer.onchange=()=>client.setAudioBuffer(Number(audioBuffer.value));
 get('display-options-toggle').onclick=()=>{const toggle=get('display-options-toggle'),options=get('display-options');options.hidden=!options.hidden;toggle.setAttribute('aria-expanded',String(!options.hidden));};
-get('display-options').querySelectorAll<HTMLInputElement>('input').forEach(radio=>radio.onchange=()=>{
+get('display-options').querySelectorAll<HTMLInputElement>('input').forEach(radio=>radio.onchange=async()=>{
   const previous=displayMode;clearInput();displayMode=radio.value as DisplayMode;
-  try {applyDisplay();setText(get('display-error'),'');try{localStorage.setItem(storagePrefix+'display',displayMode);}catch{}}
-  catch(error){displayMode=previous;applyDisplay();setText(get('display-error'),String(error));}
+  try {await applyDisplay();setText(get('display-error'),'');try{localStorage.setItem(storagePrefix+'display',displayMode);}catch{}}
+  catch(error){displayMode=previous;await applyDisplay();setText(get('display-error'),String(error));}
 });
 controls=new ControlSettings(get('game-stage'),get('control-settings'),get<HTMLButtonElement>('control-settings-toggle'),storagePrefix+'layout',value=>{clearInput();touch.setEditing(value);keyboard.setBlocked(value);});
 get('fullscreen').onclick=()=>void(fullscreen.active?fullscreen.exit():fullscreen.enter());
 function enable() {
   measurement?.refresh();
+  renderJit();
   get<HTMLButtonElement>('reset').disabled=!loaded||busy;
   get<HTMLButtonElement>('display-options-toggle').disabled=busy;
+  get<HTMLSelectElement>('audio-buffer').disabled=busy;
   get('display-options').querySelectorAll<HTMLInputElement>('input').forEach(radio=>radio.disabled=busy);
   const presentation=get<HTMLButtonElement>('fullscreen');setText(presentation,fullscreen.active?t("退出全屏"):t("全屏"));
   presentation.disabled=!fullscreen.active&&(!loaded||busy);
@@ -276,7 +297,7 @@ get<HTMLInputElement>('resource-files').onchange=e=>{
 };
 get('run').onclick=()=>void action(async()=>{if(playback==='running')await pause();else if(playback==='paused'){await start();}});
 get('reset').onclick=()=>void action(async()=>{clearInput();await client.request('reset');setPlayback('running','');});
-client.onInfo=message=>{const metrics=get('metrics');if(metrics)setText(metrics,message);const audio=client.audioNotice;if(get('audio-status').textContent!==audio)setText(get('audio-status'),audio);};
+client.onInfo=message=>{const metrics=get('metrics');if(metrics)setText(metrics,message);const audio=client.audioNotice;if(get('audio-status').textContent!==audio)setText(get('audio-status'),audio);renderJit();};
 client.onStatus=(state,error)=>{statusRevision++;clearInput();loaded=false;setPlayback(state==='stopped'?'stopped':'error',error||t("程序已结束。"));};
 window.addEventListener('blur',clearInput);
 window.addEventListener('pagehide',()=>{void client.flushFiles().catch(()=>{});});

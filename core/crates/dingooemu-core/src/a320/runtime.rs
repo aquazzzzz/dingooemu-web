@@ -48,6 +48,8 @@ struct CachedInstructionBlock {
     start: u32,
     len: u8,
     instructions: [u32; MAX_INSTRUCTION_BLOCK_LEN],
+    #[cfg(feature = "wasm-jit")]
+    wasm_jit_hint: crate::a320::wasm_jit::CacheHint,
 }
 
 fn instruction_block_cache_index(address: u32) -> usize {
@@ -59,6 +61,8 @@ fn empty_instruction_block_cache() -> Box<[CachedInstructionBlock]> {
         start: 0,
         len: 0,
         instructions: [0; MAX_INSTRUCTION_BLOCK_LEN],
+        #[cfg(feature = "wasm-jit")]
+        wasm_jit_hint: crate::a320::wasm_jit::CacheHint::default(),
     })
     .take(INSTRUCTION_BLOCK_CACHE_SLOTS)
     .collect::<Vec<_>>()
@@ -260,6 +264,10 @@ pub struct Runtime {
     /// Native code cache for hot MIPS instruction blocks
     #[cfg(feature = "jit")]
     jit: JitEngine,
+    #[cfg(feature = "wasm-jit")]
+    wasm_jit: super::wasm_jit::Engine,
+    #[cfg(feature = "wasm-jit-profile")]
+    profile: super::profile::Profile,
     /// Open guest resource files
     open_files: HashMap<u32, OpenFile>,
     /// Host directory used for persistent guest-created files
@@ -408,6 +416,10 @@ impl Runtime {
             instruction_blocks: empty_instruction_block_cache(),
             #[cfg(feature = "jit")]
             jit: JitEngine::new(),
+            #[cfg(feature = "wasm-jit")]
+            wasm_jit: super::wasm_jit::Engine::new(),
+            #[cfg(feature = "wasm-jit-profile")]
+            profile: super::profile::Profile::default(),
             open_files: HashMap::new(),
             save_directory,
             next_file_handle: 1,
@@ -692,8 +704,12 @@ impl Runtime {
 
     /// Run one frame of emulation
     pub fn tick(&mut self) -> Result<()> {
+        #[cfg(feature = "wasm-jit-profile")]
+        let profile_tick = self.profile.timer();
         #[cfg(feature = "jit")]
         self.jit.begin_frame();
+        #[cfg(feature = "wasm-jit")]
+        self.wasm_jit.begin_frame();
         self.framebuffer_submitted = false;
         super::cheats::apply(&self.cheats, &mut self.memory, &mut self.cpu);
 
@@ -732,6 +748,9 @@ impl Runtime {
         }
         self.tasks.retain(|task| task.cpu.is_running());
 
+        #[cfg(feature = "wasm-jit-profile")]
+        let profile_finish = self.profile.timer();
+
         // Use a fallback sync for tests or apps that draw without an explicit submit.
         if !self.framebuffer_submitted {
             self.sync_framebuffer();
@@ -740,6 +759,8 @@ impl Runtime {
         self.video.advance_frame();
         self.audio.advance_frame();
         self.frame_count += 1;
+        #[cfg(feature = "wasm-jit-profile")]
+        self.profile.finish(profile_tick, profile_finish);
 
         Ok(())
     }
@@ -756,9 +777,20 @@ impl Runtime {
     }
 
     fn run_active_cpu_slice(&mut self, cycles: u64) -> Result<u64> {
+        #[cfg(feature = "wasm-jit")]
+        if self.wasm_jit.is_enabled() {
+            return self.run_active_cpu_slice_mode::<true>(cycles);
+        }
+        self.run_active_cpu_slice_mode::<false>(cycles)
+    }
+
+    fn run_active_cpu_slice_mode<const WASM_JIT: bool>(&mut self, cycles: u64) -> Result<u64> {
         if self.active_context_waiting() || !self.cpu.is_running() {
             return Ok(0);
         }
+
+        #[cfg(feature = "wasm-jit-profile")]
+        let profile_slice = self.profile.timer();
 
         let mut executed = 0;
         while executed < cycles && self.cpu.is_running() {
@@ -785,7 +817,12 @@ impl Runtime {
                 .cloned();
             if let Some(func_name) = func_name {
                 log::trace!("SDK hook: PC={:#010x} = {}", pc, func_name);
-                sdk_hle::dispatch(self, pc, &func_name)?;
+                #[cfg(feature = "wasm-jit-profile")]
+                let profile_sdk = self.profile.timer();
+                let dispatched = sdk_hle::dispatch(self, pc, &func_name);
+                #[cfg(feature = "wasm-jit-profile")]
+                self.profile.hook(&func_name, profile_sdk);
+                dispatched?;
                 self.cycle_count = self.cycle_count.wrapping_add(CPU_CYCLES_PER_INSTRUCTION);
                 executed += CPU_CYCLES_PER_INSTRUCTION;
                 if self.framebuffer_submitted
@@ -795,17 +832,38 @@ impl Runtime {
                     break;
                 }
             } else {
-                let completed = self.run_cached_instruction_block(pc, cycles - executed)?;
+                let completed =
+                    self.run_cached_instruction_block_mode::<WASM_JIT>(pc, cycles - executed)?;
                 let completed_cycles = completed * CPU_CYCLES_PER_INSTRUCTION;
                 self.cycle_count = self.cycle_count.wrapping_add(completed_cycles);
                 executed += completed_cycles;
             }
         }
+        #[cfg(feature = "wasm-jit-profile")]
+        self.profile.slice(profile_slice);
         Ok(executed)
     }
 
+    #[cfg(test)]
     fn run_cached_instruction_block(&mut self, start: u32, remaining_cycles: u64) -> Result<u64> {
+        self.run_cached_instruction_block_mode::<true>(start, remaining_cycles)
+    }
+
+    fn run_cached_instruction_block_mode<const WASM_JIT: bool>(
+        &mut self,
+        start: u32,
+        remaining_cycles: u64,
+    ) -> Result<u64> {
         let instruction_limit = (remaining_cycles / CPU_CYCLES_PER_INSTRUCTION) as usize;
+
+        #[cfg(all(feature = "wasm-jit", feature = "jit"))]
+        let mut start = start;
+        #[cfg(feature = "wasm-jit")]
+        let mut instruction_limit = instruction_limit;
+        #[cfg(feature = "wasm-jit")]
+        let mut completed_before_interpreter = 0u64;
+        #[cfg(not(feature = "wasm-jit"))]
+        let completed_before_interpreter = 0u64;
 
         #[cfg(feature = "jit")]
         let attempted_compiled_block = if !self.cpu.branch_delay {
@@ -853,6 +911,97 @@ impl Runtime {
 
         self.ensure_instruction_block(start)?;
         let cache_index = instruction_block_cache_index(start);
+        #[cfg(feature = "wasm-jit")]
+        let mut cache_index = cache_index;
+        #[cfg(feature = "wasm-jit-profile")]
+        let mut profile_sample = {
+            let block = &self.instruction_blocks[cache_index];
+            self.profile.sample(
+                start,
+                &block.instructions[..block.len as usize],
+                self.cpu.branch_delay,
+            )
+        };
+
+        #[cfg(feature = "wasm-jit")]
+        if WASM_JIT && !self.cpu.branch_delay && self.cpu.is_running() {
+            let mut completed_total = 0u64;
+            let mut block_start = start;
+            let mut block_index = cache_index;
+            loop {
+                let block = &mut self.instruction_blocks[block_index];
+                match self.wasm_jit.execute(
+                    block_start,
+                    &block.instructions[..block.len as usize],
+                    instruction_limit.saturating_sub(completed_total as usize),
+                    &mut self.cpu,
+                    &mut self.memory,
+                    &mut block.wasm_jit_hint,
+                ) {
+                    super::wasm_jit::Execution::Executed(completed) => {
+                        self.cpu.account_instructions(completed);
+                        completed_total += completed;
+                        #[cfg(feature = "wasm-jit-profile")]
+                        self.profile
+                            .record(profile_sample, completed as usize, true);
+                        let next = self.cpu.regs.pc;
+                        if completed_total as usize >= instruction_limit
+                            || !self.cpu.is_running()
+                            || self.cpu.branch_delay
+                            || self.jit_chain_exit_required(next)
+                        {
+                            return Ok(completed_total);
+                        }
+                        let next_index = instruction_block_cache_index(next);
+                        let next_block = &self.instruction_blocks[next_index];
+                        // Never fetch speculatively after execution: a fetch error
+                        // must occur in the outer loop after cycle accounting.
+                        if next_block.len == 0 || next_block.start != next {
+                            return Ok(completed_total);
+                        }
+                        block_start = next;
+                        block_index = next_index;
+                        #[cfg(feature = "wasm-jit-profile")]
+                        {
+                            profile_sample = self.profile.sample(
+                                next,
+                                &next_block.instructions[..next_block.len as usize],
+                                self.cpu.branch_delay,
+                            );
+                        }
+                    }
+                    super::wasm_jit::Execution::StaleCode => {
+                        self.clear_instruction_cache();
+                        if completed_total != 0 {
+                            return Ok(completed_total);
+                        }
+                        self.ensure_instruction_block(start)?;
+                        #[cfg(feature = "wasm-jit-profile")]
+                        if profile_sample.is_some() {
+                            let block = &self.instruction_blocks[cache_index];
+                            profile_sample = Some(super::profile::Sample::refetched(
+                                start,
+                                &block.instructions[..block.len as usize],
+                                self.cpu.branch_delay,
+                            ));
+                        }
+                        break;
+                    }
+                    super::wasm_jit::Execution::Fallback => {
+                        // The chained PC already passed all runtime boundary
+                        // checks. Interpret it here instead of dispatching twice.
+                        #[cfg(feature = "jit")]
+                        {
+                            start = block_start;
+                        }
+                        cache_index = block_index;
+                        instruction_limit -= completed_total as usize;
+                        completed_before_interpreter = completed_total;
+                        break;
+                    }
+                }
+            }
+        }
 
         #[cfg(feature = "jit")]
         if !self.cpu.branch_delay && !attempted_compiled_block {
@@ -868,7 +1017,7 @@ impl Runtime {
                 framebuffer,
             ) {
                 self.cpu.account_instructions(completed);
-                return Ok(completed);
+                return Ok(completed_before_interpreter + completed);
             }
         }
 
@@ -885,9 +1034,9 @@ impl Runtime {
                 .step_fetched_unaccounted(instruction, &mut self.memory);
             if step_result.is_err() {
                 self.cpu.account_instructions(completed);
-                self.cycle_count = self
-                    .cycle_count
-                    .wrapping_add(completed * CPU_CYCLES_PER_INSTRUCTION);
+                self.cycle_count = self.cycle_count.wrapping_add(
+                    (completed_before_interpreter + completed) * CPU_CYCLES_PER_INSTRUCTION,
+                );
             }
             if !step_result? {
                 break;
@@ -899,12 +1048,15 @@ impl Runtime {
         }
 
         self.cpu.account_instructions(completed);
+        #[cfg(feature = "wasm-jit-profile")]
+        self.profile
+            .record(profile_sample, completed as usize, false);
         #[cfg(feature = "jit")]
         self.jit.record_interpreter_execution(completed);
-        Ok(completed)
+        Ok(completed_before_interpreter + completed)
     }
 
-    #[cfg(feature = "jit")]
+    #[cfg(any(feature = "jit", feature = "wasm-jit"))]
     fn jit_chain_exit_required(&self, pc: u32) -> bool {
         if pc == TASK_RETURN_ADDRESS
             || (self.active_task.is_none()
@@ -940,6 +1092,8 @@ impl Runtime {
             start,
             len: instruction_count as u8,
             instructions,
+            #[cfg(feature = "wasm-jit")]
+            wasm_jit_hint: crate::a320::wasm_jit::CacheHint::default(),
         };
         Ok(())
     }
@@ -961,13 +1115,34 @@ impl Runtime {
         }
         #[cfg(feature = "jit")]
         self.jit.clear();
+        #[cfg(feature = "wasm-jit")]
+        self.wasm_jit.clear();
     }
 
-    /// Enable or disable native translation of hot CPU blocks.
+    #[cfg(feature = "wasm-jit")]
+    pub(crate) fn wasm_jit_metric(&self, index: u32) -> f64 {
+        self.wasm_jit.metric(index)
+    }
+
+    #[cfg(feature = "wasm-jit-profile")]
+    pub(crate) fn execution_profile_begin(&mut self) {
+        self.profile.begin();
+        self.wasm_jit.profile_begin();
+    }
+    #[cfg(feature = "wasm-jit-profile")]
+    pub(crate) fn execution_profile_end(&mut self) -> String {
+        self.profile.end();
+        serde_json::json!({"runtime": self.profile.report(), "jit": self.wasm_jit.profile_end()})
+            .to_string()
+    }
+
+    /// Enable or disable translation of hot CPU blocks in either JIT backend.
     pub fn set_jit_enabled(&mut self, enabled: bool) {
         #[cfg(feature = "jit")]
         self.jit.set_enabled(enabled);
-        #[cfg(not(feature = "jit"))]
+        #[cfg(feature = "wasm-jit")]
+        self.wasm_jit.set_enabled(enabled);
+        #[cfg(not(any(feature = "jit", feature = "wasm-jit")))]
         let _ = enabled;
     }
 
@@ -2129,6 +2304,10 @@ impl Default for Runtime {
             instruction_blocks: empty_instruction_block_cache(),
             #[cfg(feature = "jit")]
             jit: JitEngine::new(),
+            #[cfg(feature = "wasm-jit")]
+            wasm_jit: super::wasm_jit::Engine::new(),
+            #[cfg(feature = "wasm-jit-profile")]
+            profile: super::profile::Profile::default(),
             open_files: HashMap::new(),
             save_directory: None,
             next_file_handle: 1,
@@ -2148,6 +2327,62 @@ impl Default for Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Invoked by the JS game runner. Normalize every unordered map using the
+    /// original Rust types; do not ignore scheduler/file/GUI differences.
+    #[cfg(feature = "wasm-jit")]
+    #[test]
+    #[ignore = "requires a snapshot pair from the Emscripten game runner"]
+    fn compare_wasm_jit_snapshot_pair() {
+        fn canonical(path: std::ffi::OsString) -> Vec<u8> {
+            let input = std::fs::read(path).unwrap();
+            let crc = u32::from_le_bytes(input[12..16].try_into().unwrap());
+            let state: EmulatorState = crate::common::save_state::decode_a320(&input, crc).unwrap();
+            let semaphores: BTreeMap<_, _> = state.semaphores.iter().collect();
+            let open_files: BTreeMap<_, _> = state.open_files.iter().collect();
+            let file_searches: BTreeMap<_, _> = state.file_searches.iter().collect();
+            // Group into tuples because serde's tuple implementation has a size limit.
+            bincode::serialize(&(
+                crc,
+                (
+                    state.cpu,
+                    state.memory.canonical_snapshot_bytes(),
+                    state.video,
+                    state.input,
+                    state.audio,
+                    state.frame_count,
+                    state.cycle_count,
+                ),
+                (
+                    state.tasks,
+                    state.scheduler_cursor,
+                    state.main_wait,
+                    state.active_task,
+                    semaphores,
+                    state.next_semaphore_handle,
+                    open_files,
+                    state.next_file_handle,
+                ),
+                (
+                    file_searches,
+                    state.gui,
+                    state.app_main_args_initialized,
+                    state.locale_ansi_buffer,
+                    state.framebuffer_submitted,
+                ),
+            ))
+            .unwrap()
+        }
+        let a = canonical(std::env::var_os("DINGOO_STATE_A").expect("DINGOO_STATE_A"));
+        let b = canonical(std::env::var_os("DINGOO_STATE_B").expect("DINGOO_STATE_B"));
+        assert!(
+            a == b,
+            "Semantic state differs: sizes {} / {}, first differing byte {:?}",
+            a.len(),
+            b.len(),
+            a.iter().zip(&b).position(|(x, y)| x != y)
+        );
+    }
 
     fn minimal_app() -> PackageImage {
         let mut data = vec![0u8; 132];
@@ -2483,6 +2718,8 @@ mod tests {
             start: collision,
             len: 1,
             instructions: [0; MAX_INSTRUCTION_BLOCK_LEN],
+            #[cfg(feature = "wasm-jit")]
+            wasm_jit_hint: crate::a320::wasm_jit::CacheHint::default(),
         };
 
         emu.cpu.regs.pc = start;
@@ -2532,6 +2769,29 @@ mod tests {
         assert_eq!(emu.jit_diagnostics().native_executions - native_before, 8);
     }
 
+    #[cfg(feature = "wasm-jit")]
+    #[test]
+    fn wasm_chain_stops_at_runtime_boundaries() {
+        let mut emu = Runtime::default();
+        assert!(emu.jit_chain_exit_required(TASK_RETURN_ADDRESS));
+        emu.app_main_entry = Some(0x1000);
+        emu.app_main_init_check_address = Some(0x2000);
+        assert!(emu.jit_chain_exit_required(0x1000));
+        assert!(emu.jit_chain_exit_required(0x2000));
+        emu.app_main_args_initialized = true;
+        assert!(!emu.jit_chain_exit_required(0x1000));
+        emu.active_task = Some(0);
+        assert!(!emu.jit_chain_exit_required(0x2000));
+        let hook = 0x3000;
+        let (word, mask) = hook_filter_location(hook);
+        emu.hook_filter[word] |= mask;
+        emu.hooked_addrs.insert(hook, "OSTimeGet".to_string());
+        assert!(emu.jit_chain_exit_required(hook));
+        let collision = hook + HOOK_FILTER_WORDS as u32 * 64 * 4;
+        assert_eq!(hook_filter_location(hook), hook_filter_location(collision));
+        assert!(!emu.jit_chain_exit_required(collision));
+    }
+
     #[test]
     fn test_tick_stops_after_framebuffer_submission() {
         let mut emu = Runtime::default();
@@ -2568,6 +2828,80 @@ mod tests {
         assert_eq!(emu.instruction_blocks[cache_index].len, 8);
     }
 
+    #[cfg(feature = "wasm-jit")]
+    #[test]
+    fn branch_pair_fetch_never_crosses_a_delay_hook() {
+        for boundary in [0x1008u32, 0x100c] {
+            let mut emu = Runtime::default();
+            for (index, word) in [0x2463_0001, 0x2484_ffff, 0x1022_0001, 0x2421_0001]
+                .into_iter()
+                .enumerate()
+            {
+                emu.memory
+                    .write_u32(0x1000 + index as u32 * 4, word)
+                    .unwrap();
+            }
+            emu.hooked_addrs
+                .insert(boundary, "lcd_set_frame".to_string());
+            let (word, mask) = hook_filter_location(boundary);
+            emu.hook_filter[word] |= mask;
+            emu.ensure_instruction_block(0x1000).unwrap();
+            let block = &emu.instruction_blocks[instruction_block_cache_index(0x1000)];
+            assert_eq!(block.len as u32, (boundary - 0x1000) / 4);
+            assert_eq!(
+                super::super::wasm_jit::test_prefix_len(&block.instructions[..block.len as usize]),
+                2
+            );
+        }
+    }
+
+    #[cfg(feature = "wasm-jit")]
+    #[test]
+    fn branch_pair_slice_accounting_matches_pending_delay_oracle() {
+        for limit in [1usize, 3, 4] {
+            let mut emu = Runtime::default();
+            for (index, word) in [0x2401_0007, 0x2402_0007, 0x1022_0003, 0x2421_0001]
+                .into_iter()
+                .enumerate()
+            {
+                emu.memory
+                    .write_u32(0x1000 + index as u32 * 4, word)
+                    .unwrap();
+            }
+            emu.cpu.regs.pc = 0x1000;
+            emu.cpu.start();
+            assert_eq!(
+                emu.run_cached_instruction_block(0x1000, limit as u64 * CPU_CYCLES_PER_INSTRUCTION)
+                    .unwrap(),
+                limit as u64
+            );
+            assert_eq!(emu.cpu.instruction_count, limit as u64);
+            let expected = match limit {
+                1 => (0, 0, 0),
+                3 => (1, 0x1018, 1),
+                _ => (0, 0x1018, 1),
+            };
+            assert_eq!(emu.cpu.wasm_jit_branch_state(), expected);
+            assert_eq!(
+                emu.cpu.regs.pc,
+                if limit == 4 {
+                    0x1018
+                } else {
+                    0x1000 + limit as u32 * 4
+                }
+            );
+            if limit == 3 {
+                assert_eq!(
+                    emu.run_cached_instruction_block(0x100c, CPU_CYCLES_PER_INSTRUCTION)
+                        .unwrap(),
+                    1
+                );
+                assert_eq!(emu.cpu.regs.pc, 0x1018);
+                assert_eq!(emu.cpu.regs.read(1), 8);
+            }
+        }
+    }
+
     #[test]
     fn test_instruction_cache_is_cleared_by_guest_invalidation() {
         let mut emu = Runtime::default();
@@ -2576,6 +2910,8 @@ mod tests {
             start: 0x1000,
             len: 1,
             instructions: [0; MAX_INSTRUCTION_BLOCK_LEN],
+            #[cfg(feature = "wasm-jit")]
+            wasm_jit_hint: crate::a320::wasm_jit::CacheHint::default(),
         };
 
         invoke_sdk_import(&mut emu, 0x2000, "__icache_invalidate_all");

@@ -59,6 +59,21 @@ pub struct Memory {
 }
 
 impl Memory {
+    #[cfg(all(test, feature = "wasm-jit"))]
+    pub(crate) fn canonical_snapshot_bytes(&self) -> Vec<u8> {
+        let allocations: std::collections::BTreeMap<_, _> = self.allocations.iter().collect();
+        bincode::serialize(&(
+            &self.ram,
+            &self.framebuffer,
+            &self.ipu_registers,
+            self.heap_ptr,
+            allocations,
+            &self.free_blocks,
+            &self.write_log,
+        ))
+        .unwrap()
+    }
+
     /// Create a new memory instance with all RAM zeroed
     pub fn new() -> Self {
         // Heap starts in the middle of RAM (16MB offset)
@@ -227,6 +242,51 @@ impl Memory {
             return Ok(u32::from_le_bytes(bytes));
         }
         self.read_u32(addr)
+    }
+
+    /// Check every byte of a JIT prefix, including untracked frontend writes.
+    /// Translate/bounds-check contiguous RAM once. Unusual mappings and virtual
+    /// wraparound keep the existing per-instruction fetch semantics.
+    #[cfg(feature = "wasm-jit")]
+    #[inline]
+    pub(crate) fn instruction_bytes_match(&self, start: u32, expected: &[u8]) -> bool {
+        debug_assert_eq!(expected.len() % 4, 0);
+        if expected.is_empty() {
+            return true;
+        }
+        let physical = self.translate_address(start) as usize;
+        if let Some(bytes) = physical
+            .checked_add(expected.len())
+            .and_then(|end| self.ram.get(physical..end))
+        {
+            // Fixed-width loads avoid a generic memcmp call in the Wasm hot
+            // path. These reads are alignment-independent and compare every
+            // byte, without a hash or a skipped-check window.
+            let mut actual = bytes.chunks_exact(8);
+            let mut expected = expected.chunks_exact(8);
+            if !actual.by_ref().zip(expected.by_ref()).all(|(a, b)| {
+                u64::from_le_bytes(a.try_into().expect("eight code bytes"))
+                    == u64::from_le_bytes(b.try_into().expect("eight code bytes"))
+            }) {
+                return false;
+            }
+            return match expected.remainder().len() {
+                0 => true,
+                4 => {
+                    u32::from_le_bytes(actual.remainder().try_into().expect("four code bytes"))
+                        == u32::from_le_bytes(
+                            expected.remainder().try_into().expect("four code bytes"),
+                        )
+                }
+                _ => false,
+            };
+        }
+        expected.chunks_exact(4).enumerate().all(|(index, bytes)| {
+            let word = u32::from_le_bytes(bytes.try_into().expect("instruction length"));
+            self.fetch_instruction(start.wrapping_add(index as u32 * 4))
+                .ok()
+                == Some(word)
+        })
     }
 
     /// Read a byte from memory
@@ -523,6 +583,12 @@ impl Memory {
         }
         #[cfg(not(debug_assertions))]
         let _ = (addr, count);
+    }
+
+    /// Preserve debug write tracking for a completed compiled RAM store.
+    #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
+    pub(crate) fn wasm_jit_track_write(&mut self, physical: u32, count: usize) {
+        self.track_writes(physical, count);
     }
 
     /// Allocate memory from the heap

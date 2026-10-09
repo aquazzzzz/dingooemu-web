@@ -24,6 +24,41 @@ use crate::EMULATOR;
 
 const PERFORMANCE_LEVEL: u32 = 4;
 
+// Diagnostic archives only. The calling frontend owns its bounded copy buffer.
+#[cfg(feature = "wasm-jit-profile")]
+static mut EXECUTION_PROFILE_REPORT: Vec<u8> = Vec::new();
+#[cfg(feature = "wasm-jit-profile")]
+#[no_mangle]
+pub extern "C" fn dingooemu_profile_begin() {
+    if let Some(emulator) = unsafe { EMULATOR.as_mut() } {
+        emulator.execution_profile_begin();
+    }
+}
+#[cfg(feature = "wasm-jit-profile")]
+#[no_mangle]
+pub extern "C" fn dingooemu_profile_end() -> usize {
+    let report = unsafe { EMULATOR.as_mut() }
+        .map(Emulator::execution_profile_end)
+        .unwrap_or_else(|| "null".into());
+    unsafe {
+        EXECUTION_PROFILE_REPORT = report.into_bytes();
+        EXECUTION_PROFILE_REPORT.len()
+    }
+}
+#[cfg(feature = "wasm-jit-profile")]
+#[no_mangle]
+pub unsafe extern "C" fn dingooemu_profile_copy(output: *mut u8, capacity: usize) -> bool {
+    if output.is_null() || capacity < EXECUTION_PROFILE_REPORT.len() {
+        return false;
+    }
+    ptr::copy_nonoverlapping(
+        EXECUTION_PROFILE_REPORT.as_ptr(),
+        output,
+        EXECUTION_PROFILE_REPORT.len(),
+    );
+    true
+}
+
 #[no_mangle]
 pub extern "C" fn dingooemu_audio_queue_ms() -> f64 {
     unsafe { EMULATOR.as_ref() }
@@ -213,6 +248,57 @@ pub extern "C" fn retro_load_game_special(
 pub extern "C" fn dingooemu_flush_save_files() -> c_uint {
     unsafe { EMULATOR.as_mut() }
         .map_or(1, |emulator| u32::from(emulator.flush_save_files_checked()))
+}
+
+// Browser commands run between core iterations on the owning thread.
+#[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
+static WASM_JIT_CHOICE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[no_mangle]
+pub extern "C" fn dingooemu_set_wasm_jit_enabled(enabled: c_uint) -> c_uint {
+    #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
+    {
+        extern "C" {
+            fn dingoo_wasm_jit_set_enabled(enabled: c_uint);
+        }
+        let Some(emulator) = (unsafe { EMULATOR.as_mut() }) else {
+            return 0;
+        };
+        if emulator.guest_architecture() != dingooemu_core::content::GuestArchitecture::Mips32 {
+            return 0;
+        }
+        let enabled = enabled != 0;
+        unsafe {
+            dingoo_wasm_jit_set_enabled(u32::from(enabled));
+        }
+        WASM_JIT_CHOICE.store(if enabled { 2 } else { 1 }, Ordering::Relaxed);
+        emulator.set_jit_enabled(enabled);
+        return 1;
+    }
+    #[cfg(not(all(feature = "wasm-jit", target_os = "emscripten")))]
+    {
+        let _ = enabled;
+        0
+    }
+}
+
+/// Experimental bridge contract, independent of the native Cranelift backend.
+#[no_mangle]
+pub extern "C" fn dingooemu_wasm_jit_abi() -> c_uint {
+    4 * u32::from(cfg!(all(feature = "wasm-jit", target_os = "emscripten")))
+}
+
+#[no_mangle]
+pub extern "C" fn dingooemu_wasm_jit_metric(index: c_uint) -> f64 {
+    #[cfg(feature = "wasm-jit")]
+    {
+        unsafe { EMULATOR.as_ref() }.map_or(-1.0, |emulator| emulator.wasm_jit_metric(index))
+    }
+    #[cfg(not(feature = "wasm-jit"))]
+    {
+        let _ = index;
+        -1.0
+    }
 }
 
 #[no_mangle]
@@ -819,6 +905,13 @@ fn read_core_options(mut get: impl FnMut(&CStr) -> Option<String>) -> CoreOption
 
 fn apply_core_options(emulator: &mut Emulator) {
     let options = read_core_options(get_core_option);
+    let jit_enabled = options.jit_enabled;
+    #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
+    let jit_enabled = match WASM_JIT_CHOICE.load(Ordering::Relaxed) {
+        1 => false,
+        2 => true,
+        _ => jit_enabled,
+    };
     emulator.set_master_volume(options.volume);
     emulator.set_input_repeat_timing(options.repeat_delay, options.repeat_period);
     emulator.set_swap_ab(options.swap_ab);
@@ -826,7 +919,7 @@ fn apply_core_options(emulator: &mut Emulator) {
     crate::logger::set_debug_logging(false);
     emulator.set_unknown_instruction_policy(options.unknown_instruction_policy);
     set_screen_orientation(options.orientation);
-    emulator.set_jit_enabled(options.jit_enabled);
+    emulator.set_jit_enabled(jit_enabled);
     emulator.set_jit_diagnostics_enabled(options.diagnostics_enabled);
     crate::diagnostics::set_enabled(options.diagnostics_enabled, emulator);
     update_diagnostic_audio_buffer_status(crate::diagnostics::is_enabled());
@@ -839,7 +932,7 @@ fn apply_core_options(emulator: &mut Emulator) {
         options.diagnostics_enabled,
         options.unknown_instruction_policy,
         options.orientation,
-        if options.jit_enabled { "jit" } else { "interpreter" }
+        if jit_enabled { "jit" } else { "interpreter" }
     );
 }
 

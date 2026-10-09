@@ -9,7 +9,7 @@ export function download(name:string,data:Blob) {
 interface Hooks {
   operate(job:()=>Promise<void>):Promise<void>;
   currentHash():string|undefined;
-  currentFiles():MountedFile[];
+  currentFiles():Promise<MountedFile[]>;
   sync():Promise<void>;
   stop(hash:string):Promise<void>;
   play(hash:string):Promise<void>;
@@ -93,7 +93,7 @@ export class FileManager {
       const row=document.createElement('li'),name=document.createElement('span'),size=document.createElement('small'),save=document.createElement('button'),remove=document.createElement('button');
       name.textContent=file.path;size.textContent=sizeLabel(file.bytes.length);setText(save,t("导出"));setText(remove,t("删除"));row.dataset.path=file.path;
       save.onclick=()=>void this.run(async()=>{
-        const source=this.selected.value===this.hooks.currentHash()?this.hooks.currentFiles():(await this.store.load(this.selected.value)).files;
+        const source=this.selected.value===this.hooks.currentHash()?await this.hooks.currentFiles():(await this.store.load(this.selected.value)).files;
         const current=source.find(f=>f.path===file.path);if(!current)throw new Error(t("文件已变化，请刷新列表。"));
         download(file.path.split('/').pop()!,new Blob([new Uint8Array(current.bytes)]));
       });
@@ -113,7 +113,7 @@ export class FileManager {
   }
   private async backup(hash:string) {
     if(!hash)return;const {record,files}=await this.store.load(hash);
-    const current=hash===this.hooks.currentHash()?this.hooks.currentFiles():files;
+    const current=hash===this.hooks.currentHash()?await this.hooks.currentFiles():files;
     const name=record?.name.split('/').pop()||'game';
     download(name+'.dingoo-saves.json',new Blob([exportSaves(hash,current)],{type:'application/json'}));
     setText(this.message,t("已导出游戏文件备份。"));

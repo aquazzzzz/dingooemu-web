@@ -151,9 +151,37 @@ impl Emulator {
         }
     }
 
+    #[cfg(feature = "wasm-jit")]
+    pub fn wasm_jit_metric(&self, index: u32) -> f64 {
+        match &self.runtime {
+            Runtime::A320(runtime) => runtime.wasm_jit_metric(index),
+            Runtime::A330(_) => {
+                if index <= 11 {
+                    0.0
+                } else {
+                    -1.0
+                }
+            }
+        }
+    }
+
     pub fn set_jit_diagnostics_enabled(&mut self, enabled: bool) {
         if let Runtime::A320(runtime) = &mut self.runtime {
             runtime.set_jit_diagnostics_enabled(enabled);
+        }
+    }
+
+    #[cfg(feature = "wasm-jit-profile")]
+    pub fn execution_profile_begin(&mut self) {
+        if let Runtime::A320(runtime) = &mut self.runtime {
+            runtime.execution_profile_begin();
+        }
+    }
+    #[cfg(feature = "wasm-jit-profile")]
+    pub fn execution_profile_end(&mut self) -> String {
+        match &mut self.runtime {
+            Runtime::A320(runtime) => runtime.execution_profile_end(),
+            Runtime::A330(_) => "null".into(),
         }
     }
 

@@ -28,6 +28,8 @@ cargo-husky = { version = "=1.5.0", default-features = false, features = ["preco
 
 [features]
 default = ["screenshots"]
+wasm-jit = []
+wasm-jit-profile = ["wasm-jit"]
 screenshots = ["dep:image"]
 standalone = ["dep:rodio"]
 jit = [

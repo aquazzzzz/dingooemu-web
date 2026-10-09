@@ -99,6 +99,10 @@ typedef struct
    pthread_t program_thread_id;
    emscripten_lock_t raf_lock;
    emscripten_condvar_t raf_cond;
+#ifdef DINGOO_CORE_WORKER
+   unsigned raf_sequence;
+   unsigned consumed_raf_sequence;
+#endif
 #endif
    uint64_t memory_used;
    uint64_t memory_limit;
@@ -205,6 +209,11 @@ void cmd_toggle_game_focus(void)
    command_event(CMD_EVENT_GAME_FOCUS_TOGGLE, NULL);
 }
 
+void cmd_quit(void)
+{
+   command_event(CMD_EVENT_QUIT, NULL);
+}
+
 void cmd_reset(void)
 {
    command_event(CMD_EVENT_RESET, NULL);
@@ -248,6 +257,84 @@ bool cmd_set_display_shader(const char *path)
    settings_t *settings = config_get_ptr();
    return video_shader_apply_shader(settings,
          video_shader_parse_type(path), path, false);
+}
+#endif
+
+#ifdef DINGOO_CORE_WORKER
+/* Every core-facing export is executed between iterations on its owning thread.
+ * Never synchronously wait on that thread from the browser: FS/audio/GL can
+ * themselves proxy to the browser and a synchronous wait would deadlock. */
+extern double dingooemu_measure_get(unsigned);
+extern void dingooemu_measure_begin(void), dingooemu_measure_end(void);
+extern double dingooemu_audio_queue_ms(void);
+extern unsigned dingooemu_flush_save_files(void);
+extern void dingooemu_state_present(void);
+extern unsigned dingooemu_wasm_jit_abi(void);
+extern double dingooemu_wasm_jit_metric(unsigned);
+extern unsigned dingooemu_set_wasm_jit_enabled(unsigned);
+extern void DingooWorkerComplete(int, double);
+extern double audioworklet_queue_ms(void), audioworklet_base_latency_ms(void), audioworklet_output_latency_ms(void);
+static int dingoo_worker_jit;
+typedef struct {int id, op, a, b;} dingoo_worker_request;
+static void dingoo_worker_execute(void *data)
+{
+   dingoo_worker_request *q = (dingoo_worker_request*)data;
+   double result = 0;
+   unsigned i;
+   double *values;
+   switch (q->op) {
+      case 1: cmd_pause(); break;
+      case 2: cmd_unpause(); break;
+      case 3: cmd_reset(); break;
+      case 17: cmd_quit(); break;
+      case 18: result = dingooemu_set_wasm_jit_enabled(q->a); break;
+      case 4: result = cmd_set_display_shader((const char*)q->a); break;
+      case 5: result = retro_serialize_size(); break;
+      case 6: result = retro_serialize((void*)q->a, q->b); break;
+      case 7: result = retro_unserialize((const void*)q->a, q->b); break;
+      case 8: result = dingooemu_flush_save_files(); break;
+      case 9: cmd_finish_load_content_animation(); dingooemu_state_present(); break;
+      case 10: dingooemu_measure_begin(); break;
+      case 11: dingooemu_measure_end(); break;
+      case 15: dingooemu_measure_begin(); goto read_telemetry;
+      case 16: dingooemu_measure_end(); /* fall through */
+      case 12:
+read_telemetry:
+         values = (double*)q->a;
+         for (i = 0; i < 19; ++i) values[i] = dingooemu_measure_get(i);
+         values[19] = dingooemu_audio_queue_ms();
+         values[20] = audioworklet_queue_ms();
+         values[21] = audioworklet_base_latency_ms();
+         values[22] = audioworklet_output_latency_ms();
+         values[23] = audio_driver_get_underruns();
+         for (i = 0; i < 8; ++i) values[24+i] = dingooemu_wasm_jit_metric(i);
+         EM_ASM({
+            const stats = Module['dingooWasmJitStats']();
+            const keys = 'submitted|compiled|failed|discarded|requests|ready|sessions|generatedBytes'.split('|');
+            // Shared memory can grow on another thread between callbacks.
+            const view = new Float64Array(wasmMemory.buffer, $0 + 32*8, 8);
+            for (let i=0;i<keys.length;i++) view[i] = stats[keys[i]];
+         }, values);
+         break;
+      case 13: result = dingooemu_wasm_jit_abi(); break;
+      case 14: EM_ASM({Module['dingooWasmJitDispose']?.();}); break;
+      default: break;
+   }
+   DingooWorkerComplete(q->id, result);
+   free(q);
+}
+int dingooemu_worker_dispatch(int id, int op, int a, int b)
+{
+   dingoo_worker_request *q;
+   if (!emscripten_platform_data || !emscripten_platform_data->program_thread_id) return 0;
+   q = (dingoo_worker_request*)malloc(sizeof(*q));
+   if (!q) return 0;
+   q->id=id; q->op=op; q->a=a; q->b=b;
+   if (!emscripten_proxy_async(emscripten_proxy_get_system_queue(),
+         emscripten_platform_data->program_thread_id, dingoo_worker_execute, q)) {
+      free(q); return 0;
+   }
+   return 1;
 }
 #endif
 
@@ -487,7 +574,19 @@ void platform_emscripten_wait_for_frame(void)
    {
       /* Firefox needs glFinish explicitly called here. */
       gl_finish();
+#ifdef DINGOO_CORE_WORKER
+      /* Retain refreshes that arrived during emulation instead of losing their
+       * signal and waiting for an additional display period after a slow frame.
+       * The bounded atomic wait also lets control RPCs run when a hidden page
+       * stops producing RAF callbacks. */
+      unsigned sequence = emscripten_atomic_load_u32(&emscripten_platform_data->raf_sequence);
+      if (sequence == emscripten_platform_data->consumed_raf_sequence)
+         emscripten_atomic_wait_u32(&emscripten_platform_data->raf_sequence, sequence, 100000000LL);
+      emscripten_platform_data->consumed_raf_sequence =
+         emscripten_atomic_load_u32(&emscripten_platform_data->raf_sequence);
+#else
       emscripten_condvar_waitinf(&emscripten_platform_data->raf_cond, &emscripten_platform_data->raf_lock);
+#endif
    }
 }
 
@@ -766,7 +865,7 @@ static void frontend_emscripten_exec_browser(void *path)
 #endif
 
    EM_ASM({
-#ifdef PROXY_TO_PTHREAD
+#if defined(PROXY_TO_PTHREAD) && !defined(DINGOO_CORE_WORKER)
       /* undo OffscreenCanvas */
       let newCanvas = Module.canvas.cloneNode();
       Module.canvas.replaceWith(newCanvas);
@@ -1019,13 +1118,21 @@ static void *main_pthread(void* arg)
    emscripten_set_thread_name(pthread_self(), "Application main thread");
    emscripten_platform_data->program_thread_id = pthread_self();
    PlatformEmscriptenKeepThreadAlive();
+#ifdef DINGOO_CORE_WORKER
+   EM_ASM({Module['dingooWasmJitEnabled'] = !!$0;}, dingoo_worker_jit);
+#endif
    thread_main(_main_argc, _main_argv);
    return NULL;
 }
 
 static void raf_signaler(void)
 {
+#ifdef DINGOO_CORE_WORKER
+   emscripten_atomic_add_u32(&emscripten_platform_data->raf_sequence, 1);
+   emscripten_atomic_notify(&emscripten_platform_data->raf_sequence, 1);
+#else
    emscripten_condvar_signal(&emscripten_platform_data->raf_cond, 1);
+#endif
 }
 #endif
 
@@ -1106,6 +1213,9 @@ int main(int argc, char *argv[])
    emscripten_set_main_loop(raf_signaler, 0, 0);
    emscripten_set_main_loop_timing(EM_TIMING_RAF, 1);
 
+#ifdef DINGOO_CORE_WORKER
+   dingoo_worker_jit = EM_ASM_INT({return Module['dingooWasmJitEnabled'] !== false;});
+#endif
    _main_argc = argc;
    _main_argv = argv;
    pthread_attr_init(&attr);
