@@ -263,7 +263,7 @@ fn mul_is_supported_and_short_prefixes_stay_rejected() {
     }
     let mul = (0x1c << 26) | (1 << 21) | (2 << 16) | (3 << 11) | 2;
     assert_eq!(emitter::prefix_len(&[mul, 0, 0, 0]), 4);
-    for function in [0u32, 1, 4, 5, 0x20, 0x21] {
+    for function in [4u32, 5, 0x20, 0x21] {
         assert_eq!(emitter::prefix_len(&[(mul & !63) | function, 0, 0, 0]), 0);
     }
 }
@@ -588,6 +588,24 @@ fn fixtures() -> Value {
             }
         }
     }
+    // New HI/LO and conditional moves: extremes, dirty R0, all aliases,
+    // product/accumulator overflow and dependent reads come from the CPU oracle.
+    for (name, operation) in [("mult",0x18), ("multu",0x19), ("madd",0x70000000), ("maddu",0x70000001), ("mfhi",0x10), ("mflo",0x12), ("movz",0x0a), ("movn",0x0b)] {
+        for (alias,(rs,rt,rd)) in [(1,2,3),(1,2,1),(1,2,2),(0,2,3),(1,0,3),(1,2,0)].into_iter().enumerate() {
+            let word=operation|(rs<<21)|(rt<<16)|(rd<<11);
+            let inputs=VALUES.into_iter().flat_map(|a|VALUES.into_iter().map(move |b| {
+                let mut regs=Registers::new(0x80001000);regs.gpr.fill(0xdeadbeef);
+                regs.gpr[1]=a;regs.gpr[2]=b;regs.hi=a^0x81234567;regs.lo=b^0x89abcdef;regs
+            })).collect();
+            groups.push(group(format!("hilo-{name}-{alias}"),0x80001000,&[word,0x00001812,0x00002010,0x24840001],inputs,&mut memory));
+        }
+    }
+    for (index,(a,b)) in VALUES.into_iter().flat_map(|a|VALUES.into_iter().map(move |b|(a,b))).enumerate() {
+        let mut regs=Registers::new(0x80001000);regs.gpr.fill(0xdeadbeef);regs.gpr[1]=a;regs.gpr[2]=b;
+        regs.hi=a;regs.lo=b;
+        let words=[0x00220018,0x70220000,0x00001812,0x0061200a,0x0043280b,0x00003010,0x70221802];
+        groups.push(group(format!("hilo-chain-{index}"),regs.pc,&words,vec![regs],&mut memory));
+    }
     // Data-dependent sequences detect interactions that isolated instructions miss.
     for index in 0..256 {
         let start = [0, 0x8000_1000, 0x7fff_fffc, 0xffff_fffc][index % 4];
@@ -611,7 +629,7 @@ fn fixtures() -> Value {
             });
         }
         // Unsupported instructions must stop the prefix without being executed.
-        words.push([0x8822_0000, 0x5022_0001, 0x0022_0018, 0x0000_000c][index % 4]);
+        words.push([0x8822_0000, 0x5022_0001, 0x0022_001a, 0x0000_000c][index % 4]);
         words.push(0x2401_ffff);
         let inputs = (0..8)
             .map(|_| {
@@ -690,6 +708,18 @@ fn fixtures() -> Value {
         }
     }
     let mut memory_groups = Vec::new();
+    for (index,address) in [0u32,0x1000,0x1fffffd,0x02000000,0x10000000,0x10025ffd,0x13080004].into_iter().enumerate() {
+        let mut input=Registers::new(0x80001000);input.gpr.fill(0xdeadbeef);
+        input.gpr[1]=0x80000000;input.gpr[2]=0xffffffff;input.gpr[7]=address;input.hi=0xffffffff;input.lo=0xffffffff;
+        for (name,words) in [
+            ("before-load",vec![0x00220018,0x70220000,0x00001812,0x8ce40000,0x00002810]),
+            ("before-store",vec![0x00220019,0x70220001,0x00001812,0xace30000,0x00002810]),
+            ("delay-madd",vec![0x00220018,0x00001812,0x14220001,0x70220000]),
+        ] {
+            memory_groups.push(memory_group(format!("hilo-partial-{name}-{index}"),&words,input.clone(),&mut memory,&[]));
+        }
+    }
+
     for opcode in [0x20u32, 0x21, 0x23, 0x24, 0x25, 0x28, 0x29, 0x2b] {
         let width = match opcode {
             0x20 | 0x24 | 0x28 => 1,
@@ -970,7 +1000,7 @@ fn branch_pair_requires_supported_delay_and_stops_at_pair_or_store() {
         for delay in [0, 0x2421_0001, 0x8c22_0000, 0xac22_0000] {
             assert_eq!(emitter::prefix_len(&[0, 0, branch, delay, 0]), 4);
         }
-        for delay in [branch, 0x0800_0400, 0x0022_0018, 0x0000_000c] {
+        for delay in [branch, 0x0800_0400, 0x0022_001a, 0x0000_000c] {
             assert_eq!(emitter::prefix_len(&[0, 0, branch, delay, 0]), 2);
         }
         assert_eq!(emitter::prefix_len(&[0xac22_0000, branch, 0]), 1);
@@ -991,7 +1021,7 @@ fn repeated_loop_requires_one_store_a_self_backedge_and_a_complete_delay() {
         (4, 0x1520fffa),
         (5, 0x08000400),
         (3, 0xac280004),
-        (3, 0x70284000), // MADD remains unsupported; MUL is now eligible.
+        (3, 0x0022001a), // DIV remains unsupported.
     ] {
         let mut rejected = words;
         rejected[index] = replacement;
@@ -1027,7 +1057,7 @@ fn unsupported_instructions_end_the_prefix() {
         0xb822_0000,
         0x5022_0001,
         0x0800_0400,
-        0x0022_0018,
+        0x0022_001a,
         0x0000_000c,
         0x0000_000d,
         0x0022_1820,
