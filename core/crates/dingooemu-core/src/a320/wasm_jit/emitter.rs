@@ -43,13 +43,13 @@ fn self_loop_len(instructions: &[u32]) -> Option<usize> {
         if is_branch(word) {
             let delay = *instructions.get(index + 1)?;
             // BEQ/BNE with a backedge exactly to this prefix's entry.
-            if word as i16 as i32 != -(index as i32 + 1) || !supported(delay) {
+            if word as i16 as i32 != -(index as i32 + 1) || !supported(delay) || changes_hilo(delay) {
                 return None;
             }
             stores += usize::from(is_store(delay));
             return (stores == 1 && index + 2 >= 4).then_some(index + 2);
         }
-        if !supported(word) {
+        if !supported(word) || changes_hilo(word) {
             return None;
         }
         stores += usize::from(is_store(word));
@@ -96,6 +96,7 @@ fn supported(word: u32) -> bool {
         0 => matches!(
             word & 63,
             0x00 | 0x02
+                | 0x0a | 0x0b | 0x10 | 0x12 | 0x18 | 0x19
                 | 0x03
                 | 0x04
                 | 0x06
@@ -109,11 +110,38 @@ fn supported(word: u32) -> bool {
                 | 0x2a
                 | 0x2b
         ),
-        0x1c => word & 63 == 0x02, // MUL writes Rd; HI/LO are unchanged.
+        0x1c => matches!(word & 63, 0x00 | 0x01 | 0x02),
         0x09 | 0x0a | 0x0b | 0x0c | 0x0d | 0x0e | 0x0f => true,
         0x20 | 0x21 | 0x23 | 0x24 | 0x25 | 0x28 | 0x29 | 0x2b => true,
         _ => false,
     }
+}
+
+fn changes_hilo(word: u32) -> bool {
+    (word >> 26 == 0 && matches!(word & 63, 0x18 | 0x19))
+        || (word >> 26 == 0x1c && matches!(word & 63, 0x00 | 0x01))
+}
+
+// HI/LO writes commit at the instruction, so a later memory exit preserves them.
+// MADD deliberately follows the current release interpreter's unsigned operands.
+fn hilo_product(word: u32, cache: &mut RegisterCache, code: &mut Vec<u8>) {
+    let signed_product = word >> 26 == 0 && word & 63 == 0x18;
+    for register in [(word >> 21) & 31, (word >> 16) & 31] {
+        load_register(register, cache, code);
+        code.push(if signed_product { 0xac } else { 0xad });
+    }
+    code.push(0x7e); // i64.mul, preserving all 64 bits.
+    if word >> 26 == 0x1c {
+        code.extend_from_slice(&[0x20, 2, 0x28, 2]);
+        unsigned(offset_of!(Registers, hi) as u32, code);
+        code.extend_from_slice(&[0xad, 0x42, 32, 0x86, 0x20, 2, 0x28, 2]);
+        unsigned(offset_of!(Registers, lo) as u32, code);
+        code.extend_from_slice(&[0xad, 0x84, 0x7c]); // join accumulator; wrapping add.
+    }
+    code.extend_from_slice(&[0x21, 39, 0x20, 2, 0x20, 39, 0xa7, 0x36, 2]);
+    unsigned(offset_of!(Registers, lo) as u32, code);
+    code.extend_from_slice(&[0x20, 2, 0x20, 39, 0x42, 32, 0x88, 0xa7, 0x36, 2]);
+    unsigned(offset_of!(Registers, hi) as u32, code);
 }
 
 fn unsigned(mut value: u32, out: &mut Vec<u8>) {
@@ -422,7 +450,9 @@ pub(super) fn emit(start: u32, instructions: &[u32], shared: bool) -> Module {
     let count = prefix_len(instructions);
     let repeated_loop = self_loop_len(instructions).is_some();
     let branch = count >= 2 && is_branch(instructions[count - 2]);
-    let mut code = vec![1, 37, 0x7f]; // dispatcher/address locals and cached GPRs
+    let mut code = if instructions[..count].iter().any(|&word| changes_hilo(word)) {
+        vec![2, 37, 0x7f, 1, 0x7e] // extra i64 product temporary only when used
+    } else { vec![1, 37, 0x7f] };
     let mut cache = RegisterCache::default();
     code.extend_from_slice(&[0x20, 0, 0x28, 2, 0, 0x21, 2]);
     code.extend_from_slice(&[0x20, 0, 0x28, 2, 4, 0x21, 3]);
@@ -490,12 +520,31 @@ pub(super) fn emit(start: u32, instructions: &[u32], shared: bool) -> Module {
             );
             continue;
         }
+        if changes_hilo(word) {
+            hilo_product(word, &mut cache, &mut code);
+            continue;
+        }
         let destination = if matches!(opcode, 0 | 0x1c) { rd } else { rt };
         if destination == 0 {
             continue;
         }
         if opcode == 0 {
             let operation = word & 63;
+            if matches!(operation, 0x10 | 0x12) {
+                code.extend_from_slice(&[0x20, 2, 0x28, 2]);
+                unsigned(if operation == 0x10 { offset_of!(Registers, hi) } else { offset_of!(Registers, lo) } as u32, &mut code);
+                write_register(destination, &mut cache, &mut code);
+                continue;
+            }
+            if matches!(operation, 0x0a | 0x0b) {
+                load_register(rs, &mut cache, &mut code);
+                load_register(destination, &mut cache, &mut code);
+                load_register(rt, &mut cache, &mut code);
+                if operation == 0x0a { code.push(0x45); }
+                code.push(0x1b); // select rs or the old destination before aliased write.
+                write_register(destination, &mut cache, &mut code);
+                continue;
+            }
             match operation {
                 0x00 | 0x02 | 0x03 => {
                     load_register(rt, &mut cache, &mut code);
