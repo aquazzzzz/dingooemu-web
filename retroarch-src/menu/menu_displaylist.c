@@ -32,6 +32,9 @@
 #include <string/stdstring.h>
 #include <streams/file_stream.h>
 #include <features/features_cpu.h>
+#ifdef __EMSCRIPTEN__
+#include "../frontend/drivers/platform_emscripten.h"
+#endif
 
 #ifdef HAVE_CONFIG_H
 #include "../config.h"
@@ -4664,11 +4667,17 @@ static int menu_displaylist_parse_load_content_settings(
       {
          if (settings->bools.quick_menu_show_save_load_state)
          {
+#ifdef __EMSCRIPTEN__
+            if (!platform_emscripten_web_enabled())
+#endif
             if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(list,
                      MENU_ENUM_LABEL_STATE_SLOT, PARSE_ONLY_INT, true) == 0)
                count++;
 
             if (menu_entries_append(list,
+#ifdef __EMSCRIPTEN__
+                     platform_emscripten_web_enabled() ? "Save State (Website)" :
+#endif
                      msg_hash_to_str(MENU_ENUM_LABEL_VALUE_SAVE_STATE),
                      MENU_ENUM_LABEL_SAVE_STATE_STR,
                      MENU_ENUM_LABEL_SAVE_STATE,
@@ -4676,6 +4685,9 @@ static int menu_displaylist_parse_load_content_settings(
                count++;
 
             if (menu_entries_append(list,
+#ifdef __EMSCRIPTEN__
+                     platform_emscripten_web_enabled() ? "Load Latest State (Website)" :
+#endif
                      msg_hash_to_str(MENU_ENUM_LABEL_VALUE_LOAD_STATE),
                      MENU_ENUM_LABEL_LOAD_STATE_STR,
                      MENU_ENUM_LABEL_LOAD_STATE,
@@ -5058,12 +5070,20 @@ static int menu_displaylist_parse_horizontal_content_actions(
          playlist_file = path_basename_nocompression(playlist_path);
 
       menu_entries_append(list,
+#ifdef __EMSCRIPTEN__
+            (platform_emscripten_web_enabled() && entry && entry->path
+             && strstr(entry->path, "/userdata/web-library/state-")) ? "Load Saved State" :
+#endif
             msg_hash_to_str(MENU_ENUM_LABEL_VALUE_RUN),
             MENU_ENUM_LABEL_RUN_STR,
             MENU_ENUM_LABEL_RUN,
             FILE_TYPE_PLAYLIST_ENTRY, 0, idx, NULL);
 
-      if (settings->bools.quick_menu_show_save_load_state)
+      if (settings->bools.quick_menu_show_save_load_state
+#ifdef __EMSCRIPTEN__
+            && !platform_emscripten_web_enabled()
+#endif
+         )
       {
          bool savestates_enabled     = core_info_current_supports_savestate();
          playlist_t *playlist        = playlist_get_cached();

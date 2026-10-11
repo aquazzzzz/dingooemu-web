@@ -34,13 +34,11 @@ var LibraryPlatformEmscripten = {
       RPE.observer = new ResizeObserver(function(e) {
          var entry = e.find(i => i.target == Module.canvas);
          if (!entry) return;
-         if (entry.devicePixelContentBoxSize) {
-            RPE.canvasWidth = entry.devicePixelContentBoxSize[0].inlineSize;
-            RPE.canvasHeight = entry.devicePixelContentBoxSize[0].blockSize;
-         } else {
-            RPE.canvasWidth = Math.round(entry.contentRect.width * window.devicePixelRatio);
-            RPE.canvasHeight = Math.round(entry.contentRect.height * window.devicePixelRatio);
-         }
+         // Input coordinates are multiplied by this same DPR in rwebinput.
+         // Some browser emulation/zoom modes report a device-pixel content box
+         // on a different scale; mixing that box with window DPR misses touches.
+         RPE.canvasWidth = Math.round(entry.contentRect.width * window.devicePixelRatio);
+         RPE.canvasHeight = Math.round(entry.contentRect.height * window.devicePixelRatio);
          // doubles are too big to pass as an argument to exported functions
          {{{ makeSetValue("dpr", "0", "window.devicePixelRatio", "double") }}};
          _platform_emscripten_update_canvas_dimensions_cb(RPE.canvasWidth, RPE.canvasHeight, dpr);

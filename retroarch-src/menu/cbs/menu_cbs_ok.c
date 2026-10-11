@@ -68,6 +68,9 @@
 #include "../../audio/audio_driver.h"
 #include "../../record/record_driver.h"
 #include "../../frontend/frontend_driver.h"
+#ifdef __EMSCRIPTEN__
+#include "../../frontend/drivers/platform_emscripten.h"
+#endif
 #include "../../defaults.h"
 #include "../../core_option_manager.h"
 #include "../../msg_hash_lbl_str.h"
@@ -3038,6 +3041,15 @@ static int action_ok_playlist_entry_collection(const char *path,
    playlist_get_index(playlist, selection_ptr, &entry);
    if (!entry)
       goto error;
+
+#ifdef __EMSCRIPTEN__
+   if (platform_emscripten_web_playlist(entry->path))
+   {
+      if (playlist_initialized && tmp_playlist)
+         playlist_free(tmp_playlist);
+      return 0;
+   }
+#endif
 
    /* Cache entry path */
    if (entry->path && *entry->path)

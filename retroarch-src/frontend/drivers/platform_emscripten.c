@@ -46,6 +46,13 @@
 #include "../../configuration.h"
 #include "../../content.h"
 #include "../../command.h"
+#include "../../runloop.h"
+#include "../../playlist.h"
+#include "../../input/input_driver.h"
+#include "../../input/input_overlay.h"
+#ifdef HAVE_MENU
+#include "../../menu/menu_driver.h"
+#endif
 #include "../../defaults.h"
 #include "../../file_path_special.h"
 #include "../../paths.h"
@@ -234,6 +241,140 @@ void cmd_unpause(void)
    command_event(CMD_EVENT_UNPAUSE, NULL);
 }
 
+/* Called on the core owner thread, including when the canvas is in a Worker. */
+static bool dingoo_frontend_enabled;
+static bool dingoo_frontend_suspended;
+static bool dingoo_overlay_hidden;
+static int dingoo_overlay_hidden_pending = -1;
+
+void cmd_frontend_suspend(int suspended)
+{
+   if (dingoo_frontend_suspended == !!suspended) return;
+   dingoo_frontend_suspended = suspended != 0;
+   if (suspended) emscripten_pause_main_loop();
+   else emscripten_resume_main_loop();
+}
+
+void cmd_frontend_overlay_hidden(int hidden)
+{
+   /* Overlay loading is asynchronous; apply once its named pages exist. */
+   dingoo_overlay_hidden = hidden != 0;
+   dingoo_overlay_hidden_pending = dingoo_overlay_hidden;
+}
+bool platform_emscripten_web_enabled(void)
+{
+   const char *value = getenv("DINGOO_WEB_FRONTEND");
+   return value && value[0] == '1';
+}
+
+bool platform_emscripten_web_action(const char *action, const char *value)
+{
+   char message[256];
+   if (!platform_emscripten_web_enabled())
+      return false;
+   snprintf(message, sizeof(message), "DINGOO_WEB_ACTION %s %s", action, value ? value : "");
+   platform_emscripten_command_reply(message, strlen(message));
+   return true;
+}
+
+bool platform_emscripten_web_playlist(const char *path)
+{
+   const char *prefix = "/home/web_user/retroarch/userdata/web-library/";
+   if (!path || strncmp(path, prefix, strlen(prefix)) != 0)
+      return false;
+   return platform_emscripten_web_action("open", path + strlen(prefix));
+}
+
+void cmd_frontend_refresh(void)
+{
+#ifdef HAVE_MENU
+   struct menu_state *menu_st = menu_state_get_ptr();
+   playlist_free_cached();
+   if (menu_st->driver_ctx && menu_st->driver_ctx->environ_cb)
+      menu_st->driver_ctx->environ_cb(MENU_ENVIRON_RESET_HORIZONTAL_LIST,
+            NULL, menu_st->userdata);
+   menu_st->flags |= MENU_ST_FLAG_ENTRIES_NEED_REFRESH;
+#endif
+}
+int cmd_frontend_state(void)
+{
+   int state = 0;
+#ifdef HAVE_OVERLAY
+   input_overlay_t *ol = input_state_get_ptr()->overlay_ptr;
+   if (dingoo_frontend_enabled && ol && ol->active && ol->path
+         && strstr(ol->path, "/neo-retropad/"))
+   {
+      bool hidden = strstr(ol->active->name, "hidden") != NULL;
+      if (dingoo_overlay_hidden_pending >= 0)
+      {
+         if (hidden != !!dingoo_overlay_hidden_pending)
+         {
+            size_t i;
+            bool rotate = true;
+            const char *orientation = strstr(ol->active->name, "portrait")
+                  ? "portrait" : "landscape";
+            const char *layout = strstr(ol->active->name, "analog")
+                  ? "analog" : "digital";
+            for (i = 0; i < ol->size; ++i)
+               if (strstr(ol->overlays[i].name, orientation)
+                     && strstr(ol->overlays[i].name, layout)
+                     && (strstr(ol->overlays[i].name, "hidden") != NULL)
+                        == !!dingoo_overlay_hidden_pending)
+               {
+                  ol->next_index = i;
+                  command_event(CMD_EVENT_OVERLAY_NEXT, &rotate);
+                  break;
+               }
+         }
+         dingoo_overlay_hidden_pending = -1;
+         hidden = strstr(ol->active->name, "hidden") != NULL;
+      }
+      state |= 16;
+      if (hidden) state |= 32;
+      dingoo_overlay_hidden = hidden;
+   }
+#endif
+   if (dingoo_frontend_suspended) state |= 64;
+   /* XMB scales text against its pixel width. Keep it readable on a narrow
+    * phone canvas, without scaling the independently sized RetroPad overlay. */
+   if (dingoo_frontend_enabled)
+   {
+      float dpr = platform_emscripten_get_dpr();
+      float width = VIDEO_SCALE_W(platform_emscripten_get_canvas_dims());
+      float scale = width > 0.0f ? 800.0f * dpr / width : 1.0f;
+      config_get_ptr()->floats.menu_scale_factor =
+            scale < 1.0f ? 1.0f : (scale > 3.0f ? 3.0f : scale);
+   }
+#ifdef HAVE_MENU
+   if (menu_state_get_ptr()->flags & MENU_ST_FLAG_ALIVE) state |= 1;
+#endif
+   if (runloop_state_get_ptr()->flags & RUNLOOP_FLAG_PAUSED) state |= 2;
+   if ((runloop_state_get_ptr()->flags & RUNLOOP_FLAG_CORE_RUNNING)
+         && !retroarch_ctl(RARCH_CTL_IS_DUMMY_CORE, NULL)) state |= 4;
+   if (config_get_ptr()->bools.input_overlay_enable) state |= 8;
+   return state;
+}
+
+void platform_emscripten_web_overlay_loaded(void)
+{
+   /* A canvas resize can rebuild the video driver and reload page zero. */
+   if (!dingoo_frontend_enabled) return;
+   dingoo_overlay_hidden_pending = dingoo_overlay_hidden;
+   cmd_frontend_state();
+}
+
+void cmd_frontend_enabled(int enabled)
+{
+   settings_t *settings = config_get_ptr();
+   dingoo_frontend_enabled = enabled != 0;
+   settings->bools.input_overlay_enable = enabled != 0;
+   command_event(enabled ? CMD_EVENT_OVERLAY_INIT : CMD_EVENT_OVERLAY_UNLOAD, NULL);
+#ifdef HAVE_MENU
+   if (!!(cmd_frontend_state() & 1) != !!enabled)
+      command_event(CMD_EVENT_MENU_TOGGLE, NULL);
+#endif
+}
+
 void cmd_finish_load_content_animation(void)
 {
 #ifdef HAVE_GFX_WIDGETS
@@ -288,6 +429,11 @@ static void dingoo_worker_execute(void *data)
       case 3: cmd_reset(); break;
       case 17: cmd_quit(); break;
       case 18: result = dingooemu_set_wasm_jit_enabled(q->a); break;
+      case 19: cmd_frontend_enabled(q->a); break;
+      case 20: result = cmd_frontend_state(); break;
+      case 21: cmd_frontend_refresh(); break;
+      case 22: cmd_frontend_overlay_hidden(q->a); break;
+      case 23: cmd_frontend_suspend(q->a); break;
       case 4: result = cmd_set_display_shader((const char*)q->a); break;
       case 5: result = retro_serialize_size(); break;
       case 6: result = retro_serialize((void*)q->a, q->b); break;
@@ -568,6 +714,26 @@ static void set_raf_interval(void *data)
    emscripten_set_main_loop_timing(EM_TIMING_RAF, (int)data);
 }
 
+#ifdef DINGOO_CORE_WORKER
+extern double audioworklet_sync_queue_ms(void);
+static int64_t dingoo_worker_refresh_wait_ns(void)
+{
+   double queue_ms = audioworklet_sync_queue_ms();
+   double fps      = video_state_get_ptr()->av_info.timing.fps;
+   double reserve  = fps > 0.0 ? 2000.0 / fps : 2000.0 / 60.0;
+   double wait_ms;
+   if (queue_ms < 0.0)
+      return 100000000LL;
+   /* Audio already paces the core. A late display refresh must not consume
+    * the entire output queue before the next frame can supply audio.
+    * Reserve two nominal core frames, including their scheduling margin. */
+   wait_ms = queue_ms - reserve;
+   if (wait_ms <= 0.0)
+      return 0;
+   return wait_ms < 100.0 ? (int64_t)(wait_ms * 1000000.0) : 100000000LL;
+}
+#endif
+
 void platform_emscripten_wait_for_frame(void)
 {
    if (emscripten_platform_data->raf_interval)
@@ -581,7 +747,11 @@ void platform_emscripten_wait_for_frame(void)
        * stops producing RAF callbacks. */
       unsigned sequence = emscripten_atomic_load_u32(&emscripten_platform_data->raf_sequence);
       if (sequence == emscripten_platform_data->consumed_raf_sequence)
-         emscripten_atomic_wait_u32(&emscripten_platform_data->raf_sequence, sequence, 100000000LL);
+      {
+         int64_t wait_ns = dingoo_worker_refresh_wait_ns();
+         if (wait_ns > 0)
+            emscripten_atomic_wait_u32(&emscripten_platform_data->raf_sequence, sequence, wait_ns);
+      }
       emscripten_platform_data->consumed_raf_sequence =
          emscripten_atomic_load_u32(&emscripten_platform_data->raf_sequence);
 #else

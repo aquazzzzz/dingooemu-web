@@ -3,6 +3,7 @@ import {buttons, defaults, type Button, type InputUpdate} from '../input/state';
 import {path, validateFiles, MAX_SAVE_BYTES, type MountedFile} from '../storage/saves';
 import {stateLength,type Snapshot} from '../storage/snapshots';
 import {displayShader,displayPreset} from './display-shader';
+import {frontendAssets} from './frontend-assets';
 
 interface FileStream {node:{mode:number};flags:number}
 interface FileSystem {
@@ -30,6 +31,11 @@ interface Runtime {
   EmscriptenReceiveCommandReply():string|undefined;
   _cmd_quit?():void;
   _cmd_pause():void; _cmd_unpause():void; _cmd_reset():void;
+  _cmd_frontend_enabled?(enabled:number):void;
+  _cmd_frontend_state?():number;
+  _cmd_frontend_refresh?():void;
+  _cmd_frontend_overlay_hidden?(hidden:number):void;
+  _cmd_frontend_suspend?(suspended:number):void;
   _cmd_set_display_shader?(path:number):number;
   _audio_driver_get_underruns?():number;
   _dingooemu_audio_queue_ms?():number;
@@ -154,6 +160,82 @@ export class EmulatorClient {
   private openFileTimer?:ReturnType<typeof setInterval>;
   private fileQueue:Promise<void>=Promise.resolve();
   private paused=true;
+  private suspended=false;
+  private overlayHidden=false;
+  private overlayKey=`dingooemu-hybrid:${location.pathname.replace(/\/[^/]*$/, '/')}`+'neo-retropad-hidden';
+  private frontend=false;
+  private frontendWasPaused=false;
+  private menuActive=false;
+  get ready(){return this.started;}
+  get isPaused(){return this.suspended||this.paused;}
+  get isSuspended(){return this.suspended;}
+  get inFrontend(){return this.frontend;}
+  onMenuStatus:(active:boolean)=>void=()=>{};
+  onContentClosed:()=>void=()=>{};
+  onFrontendAction:(action:string,value:string)=>void=()=>{};
+  frontendLibrary:()=>Promise<MountedFile[]>=async()=>[];
+  private libraryRevision=0;
+  async refreshFrontendLibrary(refresh=true) {
+    const runtime=this.module,revision=++this.libraryRevision;if(!runtime)return;
+    const files=await this.frontendLibrary();
+    if(runtime!==this.module||revision!==this.libraryRevision)return;
+    const fs=runtime.FS;
+    for(const dir of [base+'/userdata/playlists',base+'/userdata/web-library']){
+      fs.mkdirTree(dir);
+      for(const name of fs.readdir(dir))if(name!=='.'&&name!=='..'&&fs.isFile(fs.stat(dir+'/'+name).mode))fs.unlink(dir+'/'+name);
+    }
+    for(const file of files){const dest=base+'/'+path(file.path);fs.mkdirTree(dest.slice(0,dest.lastIndexOf('/')));fs.writeFile(dest,file.bytes);}
+    if(refresh&&this.started){
+      if(!runtime._cmd_frontend_refresh)throw new Error(t('运行包需要更新，请刷新网页后重新导入游戏。'));
+      await this.call('_cmd_frontend_refresh',21);
+    }
+  }
+  async resumeFrontend() {
+    if(this.frontend){
+      const state=await this.call('_cmd_frontend_state',20);
+      if(state&1)this.toggleMenu();
+      this.frontendWasPaused=false;
+    }
+  }
+  async enterFrontend() {
+    if(!this.started||!this.module)throw new Error(t('游戏未启动，请重新导入。'));
+    if(!this.module._cmd_frontend_enabled||!this.module._cmd_frontend_suspend||!this.module._cmd_frontend_overlay_hidden)throw new Error(t('运行包需要更新，请刷新网页后重新导入游戏。'));
+    this.frontendWasPaused=this.isPaused;
+    await this.refreshFrontendLibrary();
+    await this.flushFiles();
+    await this.setSuspended(false);
+    await this.call('_cmd_unpause',2);
+    await this.call('_cmd_frontend_enabled',19,1);
+    await this.call('_cmd_frontend_overlay_hidden',22,Number(this.overlayHidden));
+    this.frontend=true;this.menuActive=true;this.onMenuStatus(true);
+  }
+  async leaveFrontend() {
+    if(!this.frontend)return;
+    if(!this.started){this.frontend=false;this.menuActive=false;return;}
+    await this.rememberOverlay();
+    await this.flushFiles();
+    await this.call('_cmd_frontend_enabled',19,0);
+    this.frontend=false;this.menuActive=false;
+    await this.request(this.frontendWasPaused?'pause':'run');
+    this.onMenuStatus(false);
+  }
+  toggleMenu(){if(this.frontend&&!this.suspended)this.module?.EmscriptenSendCommand('MENU_TOGGLE');}
+  private rememberOverlayState(state:number) {
+    if(!(state&16))return;
+    const hidden=Boolean(state&32);
+    if(hidden===this.overlayHidden)return;
+    this.overlayHidden=hidden;
+    try{localStorage.setItem(this.overlayKey,String(hidden));}catch{}
+  }
+  private async rememberOverlay() {
+    if(this.frontend&&this.started)this.rememberOverlayState(await this.call('_cmd_frontend_state',20));
+  }
+  private async setSuspended(value:boolean) {
+    if(value===this.suspended)return;
+    await this.call('_cmd_frontend_suspend',23,Number(value));this.suspended=value;
+  }
+  frontendNotice(message:string){this.module?.EmscriptenSendCommand('SHOW_MSG '+message.replace(/[\r\n]/g,' '));}
+  async loadFrontend(){await this.load(new Uint8Array(),'');}
   private stateBusy=false;
   onFileStatus:(message:string,failed:boolean)=>void=()=>{};
   onInfo:(message:string)=>void=()=>{};
@@ -161,6 +243,7 @@ export class EmulatorClient {
   constructor(private canvas:HTMLCanvasElement) {
     const params=new URLSearchParams(location.search),queryJit=params.get('jit');
     try {this.jitEnabled=localStorage.getItem(this.jitKey)!=='false';}catch{}
+    try {this.overlayHidden=localStorage.getItem(this.overlayKey)==='true';}catch{}
     if(queryJit==='0'||queryJit==='1')this.jitEnabled=queryJit==='1';
     const latency=Number(params.get('latency'));
     if([32,48,64,96,128].includes(latency))this.audioLatency=latency;
@@ -172,9 +255,9 @@ export class EmulatorClient {
     },true);
   }
   get jitChoice(){return this.jitEnabled;}
-  get jitSwitchSupported(){return !this.started||this.jitApplicable;}
+  get jitSwitchSupported(){return !this.started||!this.loadedContent||this.jitApplicable;}
   get jitNotice() {
-    if(!this.started)return t("Wasm JIT：{0} · 等待游戏",this.jitEnabled?t("已选择开启"):t("已选择关闭"));
+    if(!this.started||!this.loadedContent)return t("Wasm JIT：{0} · 等待游戏",this.jitEnabled?t("已选择开启"):t("已选择关闭"));
     if(!this.jitApplicable)return t("Wasm JIT：当前 A330 游戏不适用");
     if(!this.jitEnabled)return t("Wasm JIT：已关闭 · 使用解释器");
     if(this.telemetry[24]!==1)return t("Wasm JIT：暂不可用 · 使用解释器");
@@ -182,7 +265,7 @@ export class EmulatorClient {
   }
   async setJitEnabled(value:boolean) {
     if(value===this.jitEnabled)return;
-    if(this.started&&this.module){
+    if(this.started&&this.module&&this.loadedContent){
       if(!this.jitApplicable)throw new Error(t("Wasm JIT：当前 A330 游戏不适用"));
       if(!this.module._dingooemu_set_wasm_jit_enabled)throw new Error(t("运行包需要更新，请刷新网页后重新导入游戏。"));
       if(await this.call('_dingooemu_set_wasm_jit_enabled',18,Number(value))!==1)throw new Error(t("无法切换 JIT，请重试。"));
@@ -255,7 +338,34 @@ export class EmulatorClient {
   private configuration() {
     const settings:Record<string,string|boolean|number>={
       video_driver:'gl', audio_driver:this.audioDriver, input_driver:'rwebinput',
-      menu_driver:'rgui', video_vsync:true, audio_latency:this.activeLatency,
+      menu_driver:'xmb', xmb_font:'/font.ttf', xmb_theme:0, xmb_shadows_enable:false,
+      // Both the DingooEmu and menu-only dummy cores report 60 Hz. Run XMB
+      // at the content rate rather than the phone's 120 Hz display rate.
+      menu_scale_factor:1, menu_frame_rate:1, video_refresh_rate:60,
+      video_vsync:true, audio_latency:this.activeLatency,
+      audio_enable_menu:true,audio_enable_menu_ok:true,audio_enable_menu_cancel:true,
+      audio_enable_menu_notice:true,audio_enable_menu_scroll:true,audio_enable_menu_bgm:true,
+      input_overlay:base+'/bundle/overlays/gamepads/neo-retropad/neo-retropad.cfg',
+      overlay_directory:base+'/bundle/overlays',input_overlay_enable:false,
+      input_overlay_enable_autopreferred:false,input_overlay_hide_in_menu:false,
+      input_overlay_behind_menu:false,input_overlay_auto_rotate:true,input_overlay_auto_scale:true,
+      input_overlay_hide_when_gamepad_connected:false,input_overlay_opacity:0.75,
+      menu_swap_ok_cancel_buttons:false,
+      menu_show_load_core:true,menu_show_load_content:true,menu_show_online_updater:true,
+      menu_show_configurations:true,menu_show_restart_retroarch:true,
+      quick_menu_show_save_load_state:true,quick_menu_show_savestate_submenu:false,
+      quick_menu_show_undo_save_load_state:false,quick_menu_show_replay:false,
+      menu_savestate_resume:false,
+      playlist_directory:base+'/userdata/playlists',
+      playlist_entry_remove_enable:2,playlist_entry_rename:false,
+      content_show_playlists:true,content_show_playlist_tabs:true,
+      content_show_history:true,content_show_favorites:true,
+      content_show_netplay:2,
+      content_show_images:true,content_show_music:true,content_show_video:true,
+      content_show_explore:true,content_show_contentless_cores:2,content_show_add_entry:2,
+      quick_menu_show_add_to_favorites:true,quick_menu_show_add_to_playlist:true,
+      history_list_enable:true,
+      quick_menu_show_close_content:true,
       audio_threaded_pipeline:false, threaded_data_runloop_enable:false,
       video_smooth:this.smooth, video_font_path:'/font.ttf', video_font_size:16,
       video_shader_enable:true,video_shader:base+'/display/'+(this.smooth?'smooth':'pixel')+'.glslp',
@@ -281,9 +391,10 @@ export class EmulatorClient {
     return Object.entries(settings).map(([key,value])=>`${key} = "${value}"`).join('\n')+'\n';
   }
   async load(bytes:Uint8Array,name:string,resources:MountedFile[]=[],saves:MountedFile[]=[],writer?:((files:MountedFile[])=>Promise<void>),hash?:string,forceMain=false):Promise<void> {
-    name=path(name);
-    if(!/\.(app|cc|c2s|c3s)$/i.test(name))throw new Error(t("请选择 .app / .cc / .c2s / .c3s 游戏。"));
-    if(!bytes.length||bytes.length>128*1024*1024)throw new Error(t("游戏文件为空或超过 128 MiB。"));
+    const menuOnly=name===''&&bytes.length===0;
+    if(!menuOnly)name=path(name);
+    if(!menuOnly&&!/\.(app|cc|c2s|c3s)$/i.test(name))throw new Error(t("请选择 .app / .cc / .c2s / .c3s 游戏。"));
+    if(!menuOnly&&(!bytes.length||bytes.length>128*1024*1024))throw new Error(t("游戏文件为空或超过 128 MiB。"));
     validateFiles(resources);validateFiles(saves);
     await this.dispose();
     this.jitApplicable=/\.app$/i.test(name);
@@ -318,7 +429,7 @@ export class EmulatorClient {
         dingooWorkerError:(reason:string)=>{if(generation!==this.loadGeneration)return;this.failed=new Error(reason);if(this.loadedContent)this.onStatus('error',reason);},
         canvas:this.prepareCanvas(),noInitialRun:true,print:capture,printErr:capture,
         dingooWasmJitEnabled:this.jitEnabled,
-        preRun:[(module:Runtime)=>{module.ENV.LIBRARY_PATH=corePath;}],
+        preRun:[(module:Runtime)=>{module.ENV.LIBRARY_PATH=corePath;module.ENV.DISABLE_DETECT_ENTER_FULLSCREEN='1';module.ENV.DINGOO_WEB_FRONTEND='1';}],
         onAbort:(reason:unknown)=>{if(generation!==this.loadGeneration)return;this.module?.dingooWasmJitDispose?.();this.failed=new Error(String(reason));this.onStatus('error',String(reason));},
         fullscreenEnter:()=>{},fullscreenExit:()=>{},
         retroArchExit:()=>{
@@ -352,19 +463,33 @@ export class EmulatorClient {
       fs.writeFile(base+'/bundle/assets/xmb/monochrome/png/retroarch.png',iconBytes);
       fs.mkdirTree(base+'/bundle/info');
       fs.writeFile(base+'/bundle/info/dingooemu_libretro.info',coreInfoBytes);
+      for(const file of await frontendAssets()){
+        const destination=base+'/'+file.path;fs.mkdirTree(destination.slice(0,destination.lastIndexOf('/')));fs.writeFile(destination,file.bytes);
+      }
       const content=base+'/userdata/content/'+name;
-      fs.mkdirTree(content.slice(0,content.lastIndexOf('/')));fs.writeFile(content,bytes);
+      if(!menuOnly){fs.mkdirTree(content.slice(0,content.lastIndexOf('/')));fs.writeFile(content,bytes);}
       for(const file of resources){const dest=base+'/userdata/content/'+path(file.path);fs.mkdirTree(dest.slice(0,dest.lastIndexOf('/')));fs.writeFile(dest,file.bytes);}
       for(const file of saves){const dest=base+'/userdata/saves/'+path(file.path);fs.mkdirTree(dest.slice(0,dest.lastIndexOf('/')));fs.writeFile(dest,file.bytes);}
+      await this.refreshFrontendLibrary(false);
       if(writer&&!runtime._dingooemu_flush_save_files)throw new Error(t("运行包需要更新：请关闭全部应用窗口，重新打开后再导入游戏。"));
       this.fileWriter=writer;this.fileHash=hash;this.fileRevision=0;this.savedRevision=0;
       const close=fs.close;
       fs.close=(stream)=>{const name=fs.getPath(stream.node),writable=(stream.flags&3)!==0;close.call(fs,stream);if(writable&&name.startsWith(saveRoot)&&name!==saveRoot+'dingooemu-diagnostic.txt')this.markFilesDirty();};
       fs.writeFile(base+'/userdata/retroarch.cfg',this.configuration());
       this.started=true;
-      const result=runtime.callMain(['-v',content,'-c',base+'/userdata/retroarch.cfg']);
+      const result=runtime.callMain(['-v',...(menuOnly?['--menu']:[content]),'-c',base+'/userdata/retroarch.cfg']);
       if(result!==undefined&&result!==0){this.started=false;throw new Error(t("{0}{1}",t("RetroArch 初始化失败。\n"),literal(this.log.slice(-6).join('\n'))));}
       const deadline=performance.now()+12000;
+      if(menuOnly){
+        while(this.started&&performance.now()<deadline){
+          try{if(await this.call('_cmd_frontend_state',20)&1)break;}catch{/* pthread startup */}
+          await new Promise(resolve=>setTimeout(resolve,50));
+        }
+        if(!(await this.call('_cmd_frontend_state',20)&1))throw new Error(t('RetroArch 菜单未能启动，请重试。'));
+        this.paused=false;
+        this.poll=setInterval(()=>void this.updateInfo().catch(error=>this.onStatus('error',String(error))),250);
+        return;
+      }
       while(!this.loadedContent&&!this.failed&&this.started&&performance.now()<deadline)
         await new Promise(resolve=>setTimeout(resolve,50));
       if(this.failed)throw this.failed;
@@ -493,9 +618,29 @@ export class EmulatorClient {
   private async updateInfo() {
     const runtime=this.module;if(!runtime||!this.started)return;
     await this.refreshTelemetry();
+    if(this.frontend&&runtime._cmd_frontend_state){
+      const state=await this.call('_cmd_frontend_state',20),active=Boolean(state&1);
+      if(!this.frontend||runtime!==this.module)return;
+      this.rememberOverlayState(state);
+      this.paused=Boolean(state&2);
+      if(this.loadedContent&&!(state&4)){
+        this.loadedContent=false;this.paused=true;this.frontendWasPaused=true;
+        this.onContentClosed();
+      }
+      if(this.menuActive!==active){
+        this.menuActive=active;
+        if(!active)this.frontendWasPaused=false;
+        this.onMenuStatus(active);
+      }
+    }
     let reply:string|undefined;
-    while((reply=runtime.EmscriptenReceiveCommandReply())!==undefined)
+    while((reply=runtime.EmscriptenReceiveCommandReply())!==undefined){
       if(reply.startsWith('GET_STATUS'))this.lastReply=reply.trim();
+      else if(reply.startsWith('DINGOO_WEB_ACTION ')&&runtime===this.module){
+        const match=/^DINGOO_WEB_ACTION (open|save|load) (.*)$/.exec(reply);
+        if(match)this.onFrontendAction(match[1],match[2]);
+      }
+    }
     if(performance.now()-this.lastQuery>=1000){runtime.EmscriptenSendCommand('GET_STATUS');this.lastQuery=performance.now();}
     const audio=this.audioDriver==='audioworklet'?t("AudioWorklet · 独立音频线程"):'RWebAudio';
     const underruns=this.telemetry[23]>=0?this.telemetry[23]:undefined;
@@ -510,9 +655,10 @@ export class EmulatorClient {
     if(command==='discard'){this.fileWriter=undefined;await this.dispose();return;}
     if(command==='dispose'){await this.dispose();return;}
     if(!this.module||!this.started)throw new Error(t("游戏未启动，请重新导入。"));
-    if(command==='run'){await this.call('_cmd_unpause',2);this.paused=false;}
-    if(command==='pause'){await this.call('_cmd_pause',1);this.paused=true;await this.flushFiles();}
+    if(command==='run'){await this.setSuspended(false);await this.call('_cmd_unpause',2);this.paused=false;if(this.frontend)this.frontendWasPaused=false;}
+    if(command==='pause'){await this.rememberOverlay();await this.call('_cmd_pause',1);this.paused=true;await this.flushFiles();await this.setSuspended(true);if(this.frontend)this.frontendWasPaused=true;}
     if(command==='reset'){
+      await this.setSuspended(false);
       const wasPaused=this.paused;await this.call('_cmd_pause',1);
       try {await this.flushFiles();await this.call('_cmd_reset',3);await this.flushFiles();await this.call('_cmd_unpause',2);this.paused=false;}
       catch(error){if(!wasPaused)await this.call('_cmd_unpause',2);throw error;}
@@ -550,6 +696,7 @@ export class EmulatorClient {
   private async dispose() {
     this.input({source:'*',buttons:0,cancel:true});
     if(this.module&&this.started){
+      await this.rememberOverlay();await this.setSuspended(false);
       await this.call('_cmd_pause',1);
       try {await this.flushFiles();} catch(error){if(!this.paused)await this.call('_cmd_unpause',2);throw error;}
     }
@@ -577,5 +724,7 @@ export class EmulatorClient {
     this.telemetry=new Float64Array(40);this.coreWorker=false;
     this.fileWriter=undefined;
     this.module=undefined;this.started=false;
+    this.frontend=false;this.menuActive=false;
+    this.suspended=false;
   }
 }

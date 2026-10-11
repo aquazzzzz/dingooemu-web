@@ -23,6 +23,7 @@
 #include <emscripten/wasm_worker.h>
 #include <emscripten/webaudio.h>
 #include <emscripten/atomic.h>
+#include <emscripten/emscripten.h>
 #include "../../frontend/drivers/platform_emscripten.h"
 
 #include <retro_spsc.h>
@@ -269,10 +270,11 @@ static bool audioworklet_resume_ctx(void *data)
    return audioworklet->context_running;
 }
 
-/* Bounds. The write retries its wait this many times before dropping
- * the rest; the busy-wait build spins at most this many resume attempts
- * per retry; init waits this long for the worklet module. */
+/* Bounds. The Worker waits for at most laps * slice milliseconds; early
+ * notifications must not use up that time budget. The busy-wait build
+ * retains its retry/spin bound; init waits this long for the module. */
 #define AUDIOWORKLET_WAIT_LAPS       8
+#define AUDIOWORKLET_WAIT_SLICE_MS   3.0
 #define AUDIOWORKLET_BUSYWAIT_SPINS  100000
 #define AUDIOWORKLET_INIT_WAIT_MS    30000
 #define AUDIOWORKLET_BLOCK_WAIT_MS   2000
@@ -377,7 +379,11 @@ static ssize_t audioworklet_write(void *data, const void *s, size_t ss)
    audioworklet_data_t *audioworklet = (audioworklet_data_t*)data;
    const float *samples = (const float*)s;
    size_t num_frames    = ss / 2 / sizeof(float);
+#ifdef PROXY_TO_PTHREAD
+   double wait_deadline = 0;
+#else
    int laps             = AUDIOWORKLET_WAIT_LAPS;
+#endif
 
    /* too early! might happen with external blocking */
    if (!audioworklet->driver_running)
@@ -435,14 +441,29 @@ static ssize_t audioworklet_write(void *data, const void *s, size_t ss)
        * tab - frees nothing, and this returns what went rather than
        * holding the thread. On the busy-wait build that thread is the
        * page's, and holding it froze the tab. */
+#if defined(PROXY_TO_PTHREAD)
+      {
+         double now = emscripten_get_now();
+         double remaining;
+         if (!wait_deadline)
+            wait_deadline = now + AUDIOWORKLET_WAIT_LAPS * AUDIOWORKLET_WAIT_SLICE_MS;
+         remaining = wait_deadline - now;
+         if (remaining <= 0)
+         {
+            retro_atomic_fetch_add_size(&audioworklet->dropped, num_frames);
+            break;
+         }
+         emscripten_condvar_wait(&audioworklet->trywrite_cond,
+               &audioworklet->trywrite_lock,
+               MIN(remaining, AUDIOWORKLET_WAIT_SLICE_MS) * 1000000.0);
+      }
+#else
       if (--laps < 0)
       {
          retro_atomic_fetch_add_size(&audioworklet->dropped, num_frames);
          break;
       }
-#if defined(PROXY_TO_PTHREAD)
-      emscripten_condvar_wait(&audioworklet->trywrite_cond, &audioworklet->trywrite_lock, 3000000);
-#elif defined(EMSCRIPTEN_FULL_ASYNCIFY)
+#if defined(EMSCRIPTEN_FULL_ASYNCIFY)
       retro_sleep(1);
 #else /* equivalent to defined(EMSCRIPTEN_AUDIO_BUSYWAIT) */
       {
@@ -452,6 +473,7 @@ static ssize_t audioworklet_write(void *data, const void *s, size_t ss)
                 && spins--)
             audioworklet_resume_ctx(audioworklet);
       }
+#endif
 #endif
       /* try resuming, on the off chance that the context was interrupted while blocking */
       audioworklet_resume_ctx(audioworklet);
@@ -645,6 +667,18 @@ double audioworklet_queue_ms(void)
       return -1.0;
    queued = audio->ring.capacity - retro_spsc_write_avail(&audio->ring);
    return (double)queued * 1000.0 / (audio->rate * 2 * sizeof(float));
+}
+
+/* Core-thread pacing query. Only a running, blocking output can set a
+ * refresh-wait budget: suspended/paused output does not drain this queue. */
+double audioworklet_sync_queue_ms(void)
+{
+   audioworklet_data_t *audio = audioworklet_static_data;
+   if (!audio || !audio->context_running || audio->nonblock
+         || (retro_atomic_load_acquire_int(&audio_state_get_ptr()->runloop_snapshot)
+            & AUDIO_SNAP_PAUSED))
+      return -1.0;
+   return audioworklet_queue_ms();
 }
 
 double audioworklet_base_latency_ms(void)

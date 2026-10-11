@@ -5,6 +5,8 @@ export class GameFullscreen {
   private exitTimer: ReturnType<typeof setTimeout> | undefined;
   private pending = false;
   private integerScale = false;
+  private frontend = false;
+  private scrollPosition:[number,number]=[0,0];
   constructor(private root: HTMLElement, private screen: HTMLCanvasElement,
     private exitButton: HTMLButtonElement, private notice: HTMLElement,
     private clearInput: () => void, private onChange: () => void = () => {}) {
@@ -25,9 +27,13 @@ export class GameFullscreen {
     this.exitButton.addEventListener('focus', () => this.revealExit());
     new ResizeObserver(() => this.fit()).observe(this.screen.parentElement!);
     new MutationObserver(() => this.fit()).observe(this.screen,{attributes:true,attributeFilter:['width','height']});
-    window.addEventListener('resize',()=>this.fit());
+    const resize=()=>{this.updateViewport();this.fit();};
+    window.addEventListener('resize',resize);
+    window.visualViewport?.addEventListener('resize',resize);
+    window.visualViewport?.addEventListener('scroll',resize);
   }
   get active() {return this.mode!=='none';}
+  setFrontend(value:boolean) {this.frontend=value;this.root.classList.toggle('retroarch-frontend',value);this.fit();}
   setIntegerScale(value:boolean) {this.integerScale=value;this.fit();}
   async enter() {
     if (this.pending || this.mode !== 'none') return;
@@ -58,6 +64,7 @@ export class GameFullscreen {
     } finally { this.pending = false; }
   }
   private activate(mode: 'native' | 'page') {
+    if(this.mode==='none')this.scrollPosition=[scrollX,scrollY];
     this.mode = mode; this.clearInput();
     this.root.classList.add('immersive');
     document.body.classList.add('game-fullscreen');
@@ -66,6 +73,7 @@ export class GameFullscreen {
     const standalone=matchMedia('(display-mode: standalone)').matches
       ||Boolean((navigator as Navigator & {standalone?:boolean}).standalone);
     setText(this.notice,mode === 'page'&&!standalone ? t("浏览器未启用原生全屏，已改为铺满网页。") : '');
+    this.updateViewport();
     this.exitButton.hidden = false; this.revealExit(); this.fit();this.screen.focus({preventScroll:true});this.onChange();
   }
   private deactivate() {
@@ -73,6 +81,8 @@ export class GameFullscreen {
     this.root.classList.remove('immersive', 'show-exit');
     document.body.classList.remove('game-fullscreen');
     this.exitButton.hidden = true; setText(this.notice,'');
+    for(const name of ['--viewport-width','--viewport-height','--viewport-left','--viewport-top'])this.root.style.removeProperty(name);
+    window.scrollTo(...this.scrollPosition);
     this.fit();this.screen.focus({preventScroll:true});this.onChange();
   }
   private revealExit() {
@@ -81,6 +91,10 @@ export class GameFullscreen {
     this.exitTimer = setTimeout(() => this.root.classList.remove('show-exit'), 2500);
   }
   private fit() {
+    if(this.frontend){
+      const area=this.screen.parentElement!;
+      this.screen.style.width=`${area.clientWidth}px`;this.screen.style.height=`${area.clientHeight}px`;return;
+    }
     if (this.mode === 'none'&&!this.integerScale) {
       this.screen.style.removeProperty('width');this.screen.style.removeProperty('height');return;
     }
@@ -94,5 +108,13 @@ export class GameFullscreen {
     }
     this.screen.style.width = `${width * scale}px`;
     this.screen.style.height = `${height * scale}px`;
+  }
+  private updateViewport() {
+    if(this.mode==='none')return;
+    const viewport=this.mode==='page'?window.visualViewport:null;
+    this.root.style.setProperty('--viewport-width',`${viewport?.width??innerWidth}px`);
+    this.root.style.setProperty('--viewport-height',`${viewport?.height??innerHeight}px`);
+    this.root.style.setProperty('--viewport-left',`${viewport?.offsetLeft??0}px`);
+    this.root.style.setProperty('--viewport-top',`${viewport?.offsetTop??0}px`);
   }
 }

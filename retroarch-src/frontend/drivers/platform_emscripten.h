@@ -79,6 +79,12 @@ void platform_emscripten_command_reply(const char *msg, size_t len);
  */
 size_t platform_emscripten_command_read(char **into, size_t max_len);
 
+/* Website-owned library and snapshot operations, delivered to its async queue. */
+bool platform_emscripten_web_enabled(void);
+bool platform_emscripten_web_action(const char *action, const char *value);
+bool platform_emscripten_web_playlist(const char *path);
+void platform_emscripten_web_overlay_loaded(void);
+
 /**
  * Get the real screen dimensions of the canvas on the page, packed
  * with VIDEO_SCALE_PACK.

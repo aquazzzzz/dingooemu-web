@@ -52,6 +52,9 @@
 #include "../../content.h"
 #include "../../dynamic.h"
 #include "../../configuration.h"
+#ifdef __EMSCRIPTEN__
+#include "../../frontend/drivers/platform_emscripten.h"
+#endif
 #ifdef HAVE_NETWORKING
 #include "../../core_updater_list.h"
 #endif
@@ -1497,6 +1500,21 @@ static int action_bind_sublabel_from_enum(
 {
    const menu_file_list_cbs_t *cbs =
       (const menu_file_list_cbs_t *)file_list_get_actiondata_at_offset(list, i);
+#ifdef __EMSCRIPTEN__
+   if (cbs && platform_emscripten_web_enabled())
+   {
+      if (cbs->enum_idx == MENU_ENUM_LABEL_SAVE_STATE)
+      {
+         strlcpy(s, "Add this game and its files to the website save state list.", len);
+         return 1;
+      }
+      if (cbs->enum_idx == MENU_ENUM_LABEL_LOAD_STATE)
+      {
+         strlcpy(s, "Restore the latest website state matching this game and its resources.", len);
+         return 1;
+      }
+   }
+#endif
    if (cbs && cbs->sublabel_enum != MSG_UNKNOWN)
       strlcpy(s, msg_hash_to_str(cbs->sublabel_enum), len);
    return 1;

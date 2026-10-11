@@ -9,6 +9,8 @@
 | RetroArch 与浏览器运行器 | [libretro/RetroArch](https://github.com/libretro/RetroArch)，本地修改源码位于 `retroarch-src/` | `retroarch-src/COPYING`（GPL），以及各源文件的声明 |
 | RetroArch 内含的依赖 | `retroarch-src/deps/`、`retroarch-src/libretro-common/` 等目录 | 对应目录内的 LICENSE、COPYING 及文件声明 |
 | RetroArch 字体与加载图标 | `web/public/runtime/font.ttf`、`retroarch.png` | `web/public/runtime/ASSETS-COPYING` |
+| XMB 图标与菜单音效 | [libretro/retroarch-assets](https://github.com/libretro/retroarch-assets)，打包在 `web/public/runtime/frontend/` | CC BY 4.0，原 `bundle/assets/COPYING` 保留在资源包内 |
+| Neo RetroPad 配置与默认皮肤 | [libretro/common-overlays](https://github.com/libretro/common-overlays)，打包在 `web/public/runtime/frontend/` | CC BY 4.0，原 `bundle/overlays/COPYING` 保留在资源包内 |
 
 网站对外提供的许可文本位于 `web/public/licenses/`；许可页面入口为 `web/licenses.html`。重新分发或修改组件时，应保留适用的版权声明及许可文件，并同步网站中的副本。
 

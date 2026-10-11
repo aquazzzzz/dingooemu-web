@@ -8,10 +8,10 @@ html,body,button,a,summary,label,canvas,[data-dpad]{touch-action:manipulation}
 input,textarea,[contenteditable="true"]{user-select:text;-webkit-user-select:text;-webkit-touch-callout:default}
 
 .exit-fullscreen[hidden]{display:none}.fullscreen-notice:empty{display:none}
-body.game-fullscreen{overflow:hidden}
+body.game-fullscreen{overflow:hidden;overscroll-behavior:none}
 body.game-fullscreen header,body.game-fullscreen .toolbar,body.game-fullscreen .options,body.game-fullscreen #status,body.game-fullscreen details,body.game-fullscreen footer{display:none}
 .game-stage.immersive{
-  position:fixed;inset:0;z-index:1000;width:100%;height:100dvh;max-width:none;
+  position:fixed;inset:auto;left:var(--viewport-left,0px);top:var(--viewport-top,0px);z-index:1000;width:var(--viewport-width,100%);height:var(--viewport-height,100dvh);max-width:none;
   background:#000;display:grid;grid-template-columns:1fr 1fr;
   grid-template-rows:minmax(0,1fr) auto;gap:16px;
   padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));
@@ -193,7 +193,9 @@ body.game-fullscreen .site-about{display:none}
 .header-brand .eyebrow a{display:inline-block}
 @media(max-width:480px){.header-main{gap:8px}.header-brand .eyebrow{font-size:9px;letter-spacing:.08em}}
 @media(max-width:360px){.header-main h1{font-size:26px}}
-.header-description{margin:6px 0 0}
+.header-intro{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}
+.header-description{min-width:0;margin:0}
+.header-intro #retroarch{flex-shrink:0;white-space:nowrap;margin-left:auto;padding:8px 12px;font-size:13px}
 .pwa-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px 12px;margin:0;min-width:0;max-width:100%;text-align:right}
 .pwa-actions button{flex-shrink:0;white-space:nowrap}
 .pwa-actions #clear-site-cache{max-width:100%;white-space:normal;font-size:12px;padding:7px 10px}
@@ -250,3 +252,25 @@ body.game-fullscreen .site-about{display:none}
 #audio-buffer-note{margin:0;white-space:nowrap}
 
 .runtime-status{min-width:0;line-height:1.6;overflow-wrap:anywhere}
+
+/* RetroArch owns the full safe canvas and its Neo RetroPad touch overlay. */
+.frontend-controls{display:none}
+.game-stage.immersive.retroarch-frontend{
+  grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr);gap:0;
+  padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));
+}
+.retroarch-frontend .frontend-controls{display:block;position:absolute;z-index:5;top:max(8px,env(safe-area-inset-top));right:max(8px,env(safe-area-inset-right));border:0;padding:0;margin:0}
+.frontend-controls summary{display:flex;align-items:center;justify-content:center;list-style:none;width:36px;height:32px;border:1px solid #77988a66;border-radius:9px;background:#10231bd9;color:#e3eee8;font-size:24px;line-height:1;user-select:none;touch-action:manipulation}
+.frontend-controls summary::-webkit-details-marker{display:none}
+.frontend-controls summary:focus-visible{outline:2px solid #89cbb4;outline-offset:2px}
+.frontend-controls[open] summary{margin-left:auto;background:#305143}
+.retroarch-frontend .frontend-bar{display:grid;gap:7px;margin-top:7px;padding:10px;width:min(240px,calc(100vw - 32px));border:1px solid #456b5c;border-radius:12px;background:#10231bf2;box-shadow:0 4px 20px #0008}
+.frontend-bar button{padding:7px 11px;min-height:36px;font-size:12px;text-align:left}
+.frontend-bar small{font-size:11px;color:#a6c1b4}
+#frontend-status{font-size:12px;color:#ffcaad;overflow-wrap:anywhere}
+#frontend-status:empty{display:none}
+.immersive.retroarch-frontend .screen-wrap{grid-column:1;grid-row:1;width:100%;height:100%;overflow:hidden}
+.retroarch-frontend canvas{touch-action:none}
+.immersive.retroarch-frontend .touch,.retroarch-frontend .control-settings,.retroarch-frontend .control-settings-toggle,.retroarch-frontend .exit-fullscreen{display:none!important}
+.retroarch-frontend .fullscreen-notice{top:auto;bottom:4px;left:12px;right:12px;text-align:center}
+@media(max-height:360px){.immersive:not(.retroarch-frontend){--control-size:clamp(88px,34dvh,120px);gap:5px 10px}.immersive .shoulder-left,.immersive .shoulder-right{padding:5px 12px;min-height:30px}}

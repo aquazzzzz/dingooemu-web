@@ -44,11 +44,6 @@ dingooemu-web/
 └── LICENSES.md                     # 组件许可索引
 ```
 
-### 今后计划
-
-- **WebAssembly JIT**：探索浏览器端动态重编译方案，以改善游戏运行性能。
-- **实体手柄接入**：利用现有输入接口，增加手柄连接状态显示和按键映射设置。
-
 ### 开源组件与许可
 
 - [DingooEmu](https://github.com/AloysHF/DingooEmu) · AloysHF：源码位于 `core/`，采用 BSD 3-Clause 许可，详见 [core/LICENSE](core/LICENSE)。
@@ -95,11 +90,6 @@ dingooemu-web/
 └── LICENSES.md                     # Component license index
 ```
 
-### Roadmap
-
-- **WebAssembly JIT**: Explore dynamic recompilation in the browser to improve game performance.
-- **Gamepad integration**: Use existing input interfaces to add gamepad connection status displays and button mapping settings.
-
 ### Open-source components and licenses
 
 - [DingooEmu](https://github.com/AloysHF/DingooEmu) · AloysHF: source in `core/`, licensed under BSD 3-Clause. See [core/LICENSE](core/LICENSE).
@@ -145,11 +135,6 @@ dingooemu-web/
 ├── runtime-manifest.json           # 実行用ファイル一覧とバージョン記録
 └── LICENSES.md                     # 構成要素のライセンス一覧
 ```
-
-### 今後の予定
-
-- **WebAssembly JIT**：ブラウザー上での動的再コンパイル方式を検討し、ゲームの実行性能の改善を目指します。
-- **ゲームパッドの接続**：既存の入力インターフェースを利用し、接続状態の表示とボタン割り当て設定を追加します。
 
 ### オープンソースの構成要素とライセンス
 

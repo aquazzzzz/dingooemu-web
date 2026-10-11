@@ -13,6 +13,8 @@ def main():
     public = root / "web/public"
     for asset in (public / "runtime/worker").glob("dingooemu_libretro.*"):
         manifest["runtime_files"].setdefault(asset.relative_to(public).as_posix(), {})
+    for asset in (public / "runtime/frontend").glob("*"):
+        manifest["runtime_files"].setdefault(asset.relative_to(public).as_posix(), {})
     for relative in manifest["runtime_files"]:
         data = (public / relative).read_bytes()
         manifest["runtime_files"][relative] = {
@@ -25,9 +27,11 @@ def main():
     sources.extend((root / "core/crates").glob("*/src/**/*.rs"))
     sources.extend(root / "scripts" / name for name in (
         "build-runtime.sh", "build-audioworklet.sh", "build-worker.sh", "toolchain.sh",
-        "library_dingoo_wasm_jit.js", "library_dingoo_worker.js"))
-    sources.extend(root / name for name in ("retroarch-src/frontend/drivers/platform_emscripten.c", "retroarch-src/audio/drivers/audioworklet.c", "retroarch-src/runloop.c"))
+        "library_dingoo_wasm_jit.js", "library_dingoo_worker.js", "pack-frontend.py"))
+    sources.extend(root / name for name in ("retroarch-src/frontend/drivers/platform_emscripten.c", "retroarch-src/frontend/drivers/platform_emscripten.h", "retroarch-src/emscripten/library_platform_emscripten.js", "retroarch-src/audio/drivers/audioworklet.c", "retroarch-src/runloop.c", "retroarch-src/command.c", "retroarch-src/menu/cbs/menu_cbs_ok.c", "retroarch-src/menu/cbs/menu_cbs_sublabel.c", "retroarch-src/menu/menu_displaylist.c"))
     digest = hashlib.sha256()
+    sources.append(root / "retroarch-src/gfx/video_driver.c")
+    sources.append(root / "retroarch-src/input/input_driver.c")
     for source in sorted(sources):
         digest.update(source.relative_to(root).as_posix().encode())
         digest.update(b"\0")
@@ -43,6 +47,19 @@ def main():
             "requires": ["AudioWorklet", "SharedArrayBuffer isolation", "Worker WebGL / OffscreenCanvas"],
             "fallback": "Existing main-thread runtime on missing features or startup failure",
             "audio_buffer_default_ms": 64
+        },
+        "audio_worker_wait": {
+            "budget_ms": 24,
+            "slice_ms": 3,
+            "early_notifications": "Do not exhaust the elapsed-time budget",
+            "validation": "See docs/wasm-audio-wait.md; shared-memory JIT-on A-H ABBA and 5-minute H stability run"
+        },
+        "audio_refresh_wait": {
+            "reserve_core_frames": 2,
+            "maximum_ms": 100,
+            "active_output": "Limit Worker refresh wait to queued audio minus two nominal core frames",
+            "inactive_output": "Retain existing 100 ms refresh wait for paused, suspended, nonblocking or unavailable output",
+            "validation": "See docs/wasm-refresh-audio-budget.md; shared-memory JIT-on A-H ABBA and 5-minute D/H stability runs"
         },
         "experimental_wasm_jit": {
             "abi": 4, "enabled_by_default": True,

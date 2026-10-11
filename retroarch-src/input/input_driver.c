@@ -89,6 +89,9 @@
 #include "../core_info.h"
 #include "../driver.h"
 #include "../frontend/frontend_driver.h"
+#ifdef __EMSCRIPTEN__
+#include "../frontend/drivers/platform_emscripten.h"
+#endif
 #include "../list_special.h"
 #include "../paths.h"
 #include "../performance_counters.h"
@@ -8791,6 +8794,10 @@ static void input_overlay_loaded(retro_task_t *task,
 
    /* Enable or disable the overlay */
    input_overlay_enable_(enable_overlay);
+
+#ifdef __EMSCRIPTEN__
+   platform_emscripten_web_overlay_loaded();
+#endif
 
    /* Abort if enable failed */
    if (!(ol->flags & INPUT_OVERLAY_ALIVE))

@@ -3873,6 +3873,12 @@ void video_driver_update_viewport(
                      ol_y);
             }
          }
+         /* Overlay presets use top-left screen coordinates. OpenGL's viewport
+          * uses a bottom-left origin; convert after aspect fitting. */
+         if (!y_down)
+            vp->pos = VIDEO_POS_PACK(VIDEO_POS_X(vp->pos),
+                  VIDEO_SCALE_H(vp->full_dims) - VIDEO_POS_Y(vp->pos)
+                  - VIDEO_SCALE_H(vp->dims));
          return;  /* Skip all other viewport calculations */
       }
    }

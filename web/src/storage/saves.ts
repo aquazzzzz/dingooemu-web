@@ -27,6 +27,7 @@ export function validateFiles(files:MountedFile[],limit=128*1024*1024) {
 }
 export const gameHash=sha256;
 export class SaveStore {
+  onPackagesChanged:()=>void=()=>{};
   private database:Promise<IDBDatabase>;
   private closed=false;
   constructor(private name:string) {this.database=this.connect();}
@@ -63,7 +64,7 @@ export class SaveStore {
       const tx=db.transaction(['packages','package-meta'],'readwrite');let error:unknown;
       // Preserve the request error: an aborted transaction may only expose AbortError.
       tx.onerror=event=>{error??=(event.target as IDBRequest).error;};
-      tx.oncomplete=()=>resolve();tx.onabort=()=>reject(error||tx.error||new Error(t("保存事务中止。")));
+      tx.oncomplete=()=>{this.onPackagesChanged();resolve();};tx.onabort=()=>reject(error||tx.error||new Error(t("保存事务中止。")));
       try {tx.objectStore('packages').put(value);tx.objectStore('package-meta').put({hash:value.hash,name:value.name,size,updatedAt:Date.now()});}catch(cause){error=cause;tx.abort();}
     });
   }
@@ -77,7 +78,7 @@ export class SaveStore {
     const db=await this.db();return new Promise((resolve,reject)=>{const req=db.transaction('package-meta').objectStore('package-meta').getAll();req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});
   }
   async removePackage(hash:string) {
-    const db=await this.db();return new Promise<void>((resolve,reject)=>{const tx=db.transaction(['packages','package-meta'],'readwrite');tx.objectStore('packages').delete(hash);tx.objectStore('package-meta').delete(hash);tx.oncomplete=()=>resolve();tx.onabort=()=>reject(tx.error);});
+    const db=await this.db();return new Promise<void>((resolve,reject)=>{const tx=db.transaction(['packages','package-meta'],'readwrite');tx.objectStore('packages').delete(hash);tx.objectStore('package-meta').delete(hash);tx.oncomplete=()=>{this.onPackagesChanged();resolve();};tx.onabort=()=>reject(tx.error);});
   }
   async list():Promise<GameRecord[]> {
     const db=await this.db();return new Promise((resolve,reject)=>{const req=db.transaction('games').objectStore('games').getAll();req.onsuccess=()=>resolve(req.result.filter((record:GameRecord)=>!record.deleted));req.onerror=()=>reject(req.error);});

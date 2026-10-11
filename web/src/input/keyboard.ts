@@ -6,7 +6,7 @@ export class Keyboard {
   private recording:Button|undefined;
   private suppressed = new Set<string>();
   get recordingButton() {return this.recording;}
-  constructor(private input:InputState,private key:string,private onBinding:()=>void) {
+  constructor(private input:InputState,private key:string,private onBinding:()=>void,private onMenu?:()=>void) {
     this.bindings={...defaults};
     try {const saved=JSON.parse(localStorage.getItem(key)||'null'); if(saved && Object.keys(saved).length===12 && Object.keys(defaults).every(b => typeof saved[b]==='string' && saved[b].length>0) && new Set(Object.values(saved)).size===12) this.bindings=saved;} catch {}
     window.addEventListener('keydown',e => {
@@ -15,12 +15,18 @@ export class Keyboard {
         e.preventDefault(); const button=this.recording;
         if(e.repeat)return;
         if(e.code==='Escape') {this.clear();return;}
+        if(e.code==='F1'&&this.onMenu)return; // Reserved for the menu shortcut.
         const existing=(Object.keys(this.bindings) as Button[]).find(b=>this.bindings[b]===e.code);
         if(existing && existing!==button) this.bindings[existing]=this.bindings[button];
         this.bindings[button]=e.code; this.recording=undefined; this.clear();this.suppressed.add(e.code); this.save(); this.onBinding(); return;
       }
       if(this.blocked)return;
       if(e.target instanceof HTMLElement && (e.target.closest('[data-control-settings],#control-settings-toggle') || e.target.matches('input:not([type=checkbox]):not([type=radio]):not([type=button]),textarea,select') || e.target.isContentEditable)) return;
+      if(e.code==='F1'&&this.onMenu&&!e.ctrlKey&&!e.metaKey&&!e.altKey) {
+        e.preventDefault();e.stopImmediatePropagation();
+        if(!e.repeat)this.onMenu();
+        return;
+      }
       if(this.suppressed.has(e.code) || (e.repeat && !this.held.has(e.code)))return;
       if(Object.values(this.bindings).includes(e.code)) {e.preventDefault(); this.held.add(e.code); this.publish();}
     },true);

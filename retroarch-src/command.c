@@ -3164,6 +3164,13 @@ bool command_event_main_state(unsigned cmd)
    bool savestates_enabled     = core_info_current_supports_savestate();
    bool ret                    = false;
 
+#ifdef __EMSCRIPTEN__
+   if (cmd == CMD_EVENT_SAVE_STATE && platform_emscripten_web_action("save", NULL))
+      return true;
+   if (cmd == CMD_EVENT_LOAD_STATE && platform_emscripten_web_action("load", NULL))
+      return true;
+#endif
+
    if (savestates_enabled)
    {
       size_t info_size;

@@ -21,24 +21,24 @@
       "sha256": "469faa8457ffed7428f1c150f4d8682ce25f2d991a694eec544e661f43452f50"
     },
     "runtime/audioworklet/dingooemu_libretro.js": {
-      "bytes": 366724,
-      "sha256": "f68155d438ceccf81c4b4f3b801402f672a75b818cc5d7d8d7bf35cebca45012"
+      "bytes": 368354,
+      "sha256": "ee44f36618955912957642f4ad98fd9316c5e8e6019537d42d4d5fedc583f8f1"
     },
     "runtime/audioworklet/dingooemu_libretro.wasm": {
-      "bytes": 3833424,
-      "sha256": "73cd1c40627afd2acc1ca557c2033de42ec00137579757e5fed52d7606ac0624"
+      "bytes": 3835374,
+      "sha256": "ead4638ac6cf314a25d92b352513efd25dab43a8486dfdcaaaeae0aa197289e7"
     },
     "runtime/dingooemu_libretro.info": {
       "bytes": 782,
       "sha256": "ef27ab93fc126d655d587722faf9791c5d84652ee600f3b6ee5bdee706845080"
     },
     "runtime/dingooemu_libretro.js": {
-      "bytes": 313942,
-      "sha256": "36873d38ab14577d6e0a932406e0086b627e6213780d5b95666b373fd7eb6031"
+      "bytes": 315572,
+      "sha256": "c4437be4f1149ec2909641361a9b3fa50d835d6f954d1e434b5c337cdc122da3"
     },
     "runtime/dingooemu_libretro.wasm": {
-      "bytes": 3677313,
-      "sha256": "d7bb91ef0773a4fc9e8b1744b02d42f3a1a2ee0097f8aba9dd677e679b02d2d4"
+      "bytes": 3679268,
+      "sha256": "71bde7a8f1334e041df175a464efd54b0e51d2ae4ee6ac65b1501de92cc4665e"
     },
     "runtime/font.ttf": {
       "bytes": 4474312,
@@ -49,17 +49,25 @@
       "sha256": "6e15174de2ca83eaacccc5b3ba1d76d64c8a181182a73815a1fa07ec57678276"
     },
     "runtime/worker/dingooemu_libretro.js": {
-      "bytes": 374692,
-      "sha256": "00cc94c32a53c585921a098a5a32fdda13db36d53c85c742c1d37e6cfb8aa284"
+      "bytes": 376322,
+      "sha256": "91102ea35e900bfda1280fc559ce9770030ce5b58cd98799769c63919c33f349"
     },
     "runtime/worker/dingooemu_libretro.wasm": {
-      "bytes": 3835382,
-      "sha256": "b12fa796b28ece6155beebddd642b62e97c28875da5ff74c3ec6e2b9b5371c93"
+      "bytes": 3837924,
+      "sha256": "0880fce045fa27d76c3b4c6700ab4d1d3d2ec950f90492ae4ca6c0aa9b48092c"
+    },
+    "runtime/frontend/assets.bin": {
+      "bytes": 4108309,
+      "sha256": "8c1b179effd02b6207f380a384194b709f9df155660dc4f3a69d7098de1dce23"
+    },
+    "runtime/frontend/assets.json": {
+      "bytes": 72070,
+      "sha256": "f1ad216cc50c10f7ee2a13c2d94661cf44dc5a28ebfce82c2e8fb2f736f82222"
     }
   },
   "runtime_build": {
-    "baseline_git_commit": "6d5794fadb5371f7e34844b1564ce20950258851",
-    "core_and_bridge_source_sha256": "571adb5913414f4ff272b5d042addecc938abe430c27340669a860dec35cbe9e",
+    "baseline_git_commit": "22c87ade74896d2f98491a8d35895d89a4e7f3b4",
+    "core_and_bridge_source_sha256": "f6bba2a4d2790dcbea30c64aaffd304e7349aceb4c83c7348059dae9004d80de",
     "features": [
       "wasm-jit"
     ],
@@ -72,6 +80,19 @@
       ],
       "fallback": "Existing main-thread runtime on missing features or startup failure",
       "audio_buffer_default_ms": 64
+    },
+    "audio_worker_wait": {
+      "budget_ms": 24,
+      "slice_ms": 3,
+      "early_notifications": "Do not exhaust the elapsed-time budget",
+      "validation": "See docs/wasm-audio-wait.md; shared-memory JIT-on A-H ABBA and 5-minute H stability run"
+    },
+    "audio_refresh_wait": {
+      "reserve_core_frames": 2,
+      "maximum_ms": 100,
+      "active_output": "Limit Worker refresh wait to queued audio minus two nominal core frames",
+      "inactive_output": "Retain existing 100 ms refresh wait for paused, suspended, nonblocking or unavailable output",
+      "validation": "See docs/wasm-refresh-audio-budget.md; shared-memory JIT-on A-H ABBA and 5-minute D/H stability runs"
     },
     "experimental_wasm_jit": {
       "abi": 4,

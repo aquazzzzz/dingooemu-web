@@ -4,6 +4,7 @@ import {setupPwa} from './pwa';
 import {setupSiteCache,clearOfflineCache,reloadAfterCacheClear} from './site-cache';
 import {clearSiteData} from './storage/site-data';
 import {EmulatorClient} from './emulator/client';
+import {frontendLibrary} from './emulator/frontend-library';
 import {InputState,buttons,type Button} from './input/state';
 import {Keyboard} from './input/keyboard';
 import {Touch} from './input/touch';
@@ -14,15 +15,16 @@ import {PerformanceMeasurement} from './ui/performance-measurement';
 import {SaveStore,gameHash,validateFiles,type MountedFile} from './storage/saves';
 import {readFiles,unzip,isGame,chooseGame,type GameImport} from './storage/import';
 import {FileManager,download,sizeLabel} from './ui/file-manager';
-import {SnapshotStore,resourceIdentity} from './storage/snapshots';
+import {SnapshotStore,resourceIdentity,validateSnapshot} from './storage/snapshots';
 import {SnapshotManager,type SnapshotIdentity} from './ui/snapshot-manager';
 import {setupSourceLink} from './source-link';
 const contour='M47 5H79Q82 5 82 8V41Q82 44 85 44H118Q121 44 121 47V79Q121 82 118 82H85Q82 82 82 85V118Q82 121 79 121H47Q44 121 44 118V85Q44 82 41 82H8Q5 82 5 79V47Q5 44 8 44H41Q44 44 44 41V8Q44 5 47 5Z';
 const dpadFace=`<svg class="dpad-face" viewBox="0 0 126 126" aria-hidden="true"><defs><linearGradient id="dpad-face" x2=".8" y2="1"><stop stop-color="#557564"/><stop offset="1" stop-color="#263e32"/></linearGradient><clipPath id="dpad-clip"><path d="${contour}"/></clipPath>${([['Up',50,12],['Right',88,50],['Down',50,88],['Left',12,50]] as const).map(([dir,x,y])=>`<radialGradient id="dpad-glow-${dir}" cx="${x}%" cy="${y}%" r="58%"><stop stop-color="#b5ffd1" stop-opacity=".9"/><stop offset=".45" stop-color="#8debb0" stop-opacity=".36"/><stop offset="1" stop-color="#8debb0" stop-opacity="0"/></radialGradient>`).join('')}</defs><path d="${contour}" transform="translate(0 3)" fill="#18291f"/><path d="${contour}" fill="url(#dpad-face)" stroke="#a9c7b377" stroke-width="1.5"/><g clip-path="url(#dpad-clip)">${['Up','Right','Down','Left'].map(dir=>`<rect class="dpad-light light-${dir}" width="126" height="126" fill="url(#dpad-glow-${dir})"/>`).join('')}</g></svg>`;
 const app=document.querySelector<HTMLDivElement>('#app')!;
-app.innerHTML=`<main><header><div class="header-main"><div class="header-brand"><span class="eyebrow">POWERED BY <a href="https://github.com/libretro/RetroArch" target="_blank" rel="noopener noreferrer">RETROARCH</a> &amp; <a href="https://github.com/AloysHF/DingooEmu" target="_blank" rel="noopener noreferrer">DINGOOEMU</a></span><h1>DingooEmu Web</h1></div><div class="header-controls"><div class="language-placeholder" role="group" aria-label="界面语言"><div class="language-options"><button data-language="zh-CN" class="selected" aria-pressed="true" lang="zh-CN">中文</button><button data-language="en" aria-pressed="false" lang="en">English</button><button data-language="ja" aria-pressed="false" lang="ja">日本語</button></div></div><div class="pwa-actions"><button id="pwa-install" title="添加到桌面或主屏幕，像应用一样独立打开。" hidden>安装网页应用</button><button id="clear-site-cache" title="重新下载页面与运行资源，保留游戏、存档和设置。" disabled>获取最新版</button><span id="pwa-status" role="status" aria-live="polite"></span><span id="cache-status" role="status" aria-live="polite"></span></div></div></div><p class="header-description">丁果游戏模拟器 · 可安装为网页应用 · 离线运行 · 即时存档</p></header>
+app.innerHTML=`<main><header><div class="header-main"><div class="header-brand"><span class="eyebrow">POWERED BY <a href="https://github.com/libretro/RetroArch" target="_blank" rel="noopener noreferrer">RETROARCH</a> &amp; <a href="https://github.com/AloysHF/DingooEmu" target="_blank" rel="noopener noreferrer">DINGOOEMU</a></span><h1>DingooEmu Web</h1></div><div class="header-controls"><div class="language-placeholder" role="group" aria-label="界面语言"><div class="language-options"><button data-language="zh-CN" class="selected" aria-pressed="true" lang="zh-CN">中文</button><button data-language="en" aria-pressed="false" lang="en">English</button><button data-language="ja" aria-pressed="false" lang="ja">日本語</button></div></div><div class="pwa-actions"><button id="pwa-install" title="添加到桌面或主屏幕，像应用一样独立打开。" hidden>安装网页应用</button><button id="clear-site-cache" title="重新下载页面与运行资源，保留游戏、存档和设置。" disabled>获取最新版</button><span id="pwa-status" role="status" aria-live="polite"></span><span id="cache-status" role="status" aria-live="polite"></span></div></div></div><div class="header-intro"><p class="header-description">丁果游戏模拟器 · 可安装为网页应用 · 离线运行 · 即时存档</p><button id="retroarch" aria-keyshortcuts="F1">RetroArch 前端</button></div></header>
 <section id="pwa-install-guide" class="pwa-install-guide" role="region" aria-label="安装网页应用" hidden><div data-install-guide="ios"><p>如果当前浏览器没有以下选项，请用 Safari 打开本站。</p><ol><li>点浏览器的“分享”按钮，选择“添加到主屏幕”。</li><li>如果出现“作为网页 App 打开”，保持开启，然后点“添加”。</li><li>从主屏幕上的 DingooEmu Web 图标打开，即可隐藏浏览器栏。</li></ol></div><div data-install-guide="mac" hidden><p>需要 macOS Sonoma 14 或更高版本。</p><ol><li>在 Safari 菜单栏选择“文件”→“添加到程序坞”，或在“共享”菜单中选择“添加到程序坞”。</li><li>确认名称后点“添加”。</li><li>从程序坞中的 DingooEmu Web 图标打开，即可在独立窗口中使用。</li></ol></div></section>
 <section class="workspace"><div id="game-stage" class="game-stage"><div class="screen-wrap"><canvas id="canvas" width="320" height="240" tabindex="0" aria-label="A320 画面"></canvas><output id="fps" class="fps" aria-label="模拟帧率">FPS -</output></div>
+<details id="frontend-controls" class="frontend-controls"><summary aria-label="网页操作" title="网页操作">⋯</summary><div class="frontend-bar"><button id="frontend-menu">菜单／继续</button><button id="frontend-pause">暂停</button><button id="frontend-import">导入游戏</button><button id="frontend-return">返回网页</button><small>F1 打开／收起菜单</small><span id="frontend-status" role="status"></span></div></details>
 <div id="touch" class="touch" hidden><button data-button="L" class="shoulder-left">L</button><button data-button="R" class="shoulder-right">R</button>
 <div data-dpad class="dpad" role="group" aria-label="十字方向键，支持多方向与滑动">${dpadFace}${(['Up','Down','Left','Right'] as const).map(direction=>`<span class="dpad-arm" data-direction="${direction}" aria-hidden="true"></span>`).join('')}</div>
 <div class="action-buttons">${(['X','Y','A','B'] as Button[]).map(b=>`<button data-button="${b}">${b}</button>`).join('')}</div>
@@ -38,12 +40,12 @@ app.innerHTML=`<main><header><div class="header-main"><div class="header-brand">
 <div class="position-setting"><button id="edit-control-layout" aria-pressed="false">调整按键位置</button><button id="reset-control-layout">恢复默认位置</button><small id="layout-help">调整时拖动十字键、各按键或全屏设置按钮，完成后保存。</small></div></section>
 <button id="exit-fullscreen" class="exit-fullscreen" hidden>退出全屏</button><span id="fullscreen-notice" class="fullscreen-notice" role="status"></span></div>
 <p id="status" role="status"></p>
-<div class="toolbar"><label class="file" title="支持 .app / .cc / .c2s / .c3s 和 ZIP 游戏包">导入游戏<input id="file" type="file"></label><!-- Folder import temporarily disabled. <label class="import-button">导入文件夹<input id="game-folder" type="file" webkitdirectory multiple></label> --><button id="run" disabled>继续</button><button id="reset" disabled>重置</button><button id="quick-save" disabled>即时存档</button><button id="quick-load" disabled>即时读档</button></div>
+<div class="toolbar"><label class="file" title="支持 .app / .cc / .c2s / .c3s 和 ZIP 游戏包">导入游戏<input id="file" type="file"></label><!-- Folder import temporarily disabled. <label class="import-button">导入文件夹<input id="game-folder" type="file" webkitdirectory multiple></label> --><button id="run" disabled>暂停</button><button id="stop" title="结束当前运行，保留游戏文件和已保存存档。" disabled>中止</button><button id="reset" disabled>重置</button><button id="quick-save" disabled>即时存档</button><button id="quick-load" disabled>即时读档</button></div>
 <div class="options"><span id="game-name"></span></div>
 <div id="import-choice" class="import-choice" hidden><label for="import-game">选择包内的游戏</label><select id="import-game"></select><button id="import-open">载入</button><button id="import-cancel">取消</button></div>
 <p id="snapshot-status" role="status" aria-live="polite"></p><p id="file-status" role="status" aria-live="polite"></p><details id="resources-details" hidden><summary>本次导入的资源</summary><p>资源随游戏保存在本机；添加或移除资源会重新载入游戏。</p><label class="import-button">添加资源<input id="resource-files" type="file" multiple></label><ul id="resource-list" class="managed-files"></ul></details>
 
-</section><details id="file-manager"></details><details id="snapshot-manager"></details><details><summary>键盘映射</summary><p>点击按键后按新的物理键。重复绑定会交换两个按键。</p><div id="bindings" class="bindings"></div><button id="defaults">恢复默认</button></details>
+</section><details id="file-manager"></details><details id="snapshot-manager"></details><details><summary>键盘映射</summary><p>点击按键后按新的物理键。重复绑定会交换两个按键。</p><p>F1 打开／收起 RetroArch 菜单；方向键选择，X 确认，Z 返回（默认映射）。</p><div id="bindings" class="bindings"></div><button id="defaults">恢复默认</button></details>
 <!-- Performance measurement UI temporarily disabled.
 <details open><summary>运行测量</summary><pre id="metrics">等待首帧。</pre><pre id="audio-metrics"></pre>
 <div class="measurement-tools"><label for="measure-note">设备 / 场景备注（可选）</label><input id="measure-note" maxlength="160"><label for="measure-mode">测量模式</label><select id="measure-mode"><option value="light">轻量：帧率和音频（推荐）</option><option value="full">详细：包含每帧核心耗时</option></select><div class="measurement-buttons"><button id="measure-start" disabled>测量 30 秒</button><button id="measure-stop" hidden>提前结束</button><button id="measure-copy" disabled>复制报告</button></div><p id="measure-status" role="status" aria-live="polite">进入卡顿场景后点击测量，期间可以正常操作游戏。</p><output id="measure-summary" hidden aria-label="测量摘要"></output><textarea id="measure-report" readonly hidden rows="16" aria-label="性能测量报告" spellcheck="false"></textarea></div></details>
@@ -59,12 +61,24 @@ let preparingPwa=true;
 get<HTMLInputElement>('file').disabled=true;
 void pwa.ready.then(()=>{preparingPwa=false;enable();});
 const status=get('status'), canvas=get<HTMLCanvasElement>('canvas'), client=new EmulatorClient(canvas);
-let loaded=false, busy=false,clearingSiteData=false;
+let loaded=false, busy=false,clearingSiteData=false,frontendActive=false;
 type Playback = 'empty' | 'running' | 'paused' | 'stopped' | 'error';
 let playback:Playback='empty', statusRevision=0, visibilityPause=false;
 const storagePrefix=`dingooemu-hybrid:${location.pathname.replace(/\/[^/]*$/, '/')}`;
 const saveStore=new SaveStore(storagePrefix+'files');
 const snapshotStore=new SnapshotStore(storagePrefix+'snapshots');
+client.frontendLibrary=()=>frontendLibrary(saveStore,snapshotStore);
+let frontendSyncTimer:ReturnType<typeof setTimeout>|undefined;
+function scheduleFrontendSync() {
+  clearTimeout(frontendSyncTimer);
+  if(!frontendActive||clearingSiteData)return;
+  frontendSyncTimer=setTimeout(()=>{
+    if(busy){scheduleFrontendSync();return;}
+    void client.refreshFrontendLibrary().catch(error=>client.frontendNotice(String(error)));
+  },250);
+}
+saveStore.onPackagesChanged=snapshotStore.onChanged=scheduleFrontendSync;
+window.addEventListener('focus',scheduleFrontendSync);
 let activeGame:GameImport|undefined,pendingFiles:MountedFile[]|undefined;
 let snapshotIdentity:SnapshotIdentity|undefined;
 const fileManager=new FileManager(get<HTMLDetailsElement>('file-manager'),saveStore,{
@@ -72,8 +86,7 @@ const fileManager=new FileManager(get<HTMLDetailsElement>('file-manager'),saveSt
   play:async hash=>{const game=await saveStore.loadPackage(hash);if(!game)throw new Error(t("没有保存此游戏包，请重新导入游戏。"));pwa.gameStarted();await loadGame(game,false);},
   stop:async hash=>{
     if(hash!==client.fileIdentity)return;
-    clearInput();await client.request('dispose');loaded=false;activeGame=undefined;get('game-name').textContent='';renderResources();
-    setPlayback('stopped',t("游戏已停止，修改文件后可在“本站文件”点击“运行”。"));
+    await stopGame(t("游戏已停止，修改文件后可在“本站文件”点击“运行”。"));
   },
   clearAll:async()=>{
     const controls=[...app.querySelectorAll<HTMLButtonElement|HTMLInputElement|HTMLSelectElement>('button,input,select')].map(node=>({node,disabled:node.disabled}));
@@ -102,13 +115,48 @@ const fileManager=new FileManager(get<HTMLDetailsElement>('file-manager'),saveSt
 const snapshotManager=new SnapshotManager(get<HTMLDetailsElement>('snapshot-manager'),snapshotStore,{
   operate:action,current:()=>loaded&&client.fileIdentity?snapshotIdentity:undefined,
   capture:async save=>{clearInput();await measurement?.cancel(t("保存即时存档，测量已结束"));await client.captureSnapshot(save);},
-  restore:async snapshot=>{clearInput();await measurement?.cancel(t("读取即时存档，测量已结束"));await client.restoreSnapshot(snapshot);setPlayback('running',t("即时读档完成，游戏已继续运行。"));await fileManager.refresh(snapshot.meta.game);},
+  restore:async snapshot=>{clearInput();await measurement?.cancel(t("读取即时存档，测量已结束"));await client.restoreSnapshot(snapshot);await client.resumeFrontend();setPlayback('running',t("即时读档完成，游戏已继续运行。"));await fileManager.refresh(snapshot.meta.game);},
 },get<HTMLButtonElement>('quick-save'),get<HTMLButtonElement>('quick-load'),get('snapshot-status'));
 client.onFileStatus=(message,failed)=>{setText(get('file-status'),message);get('file-status').classList.toggle('file-error',failed);};
+client.onFrontendAction=(operation,value)=>{
+  if(!frontendActive||clearingSiteData)return;
+  if(busy){client.frontendNotice(t('正在处理，请稍后重试。'));return;}
+  void action(async()=>{
+    clearInput();
+    if(operation==='save'){
+      await snapshotManager.saveCurrent();client.frontendNotice(t('即时存档已保存。'));return;
+    }
+    if(operation==='load'){
+      await snapshotManager.restoreLatest();client.frontendNotice(t('即时读档完成，游戏已继续运行。'));return;
+    }
+    const gameMatch=/^game-([a-f0-9]{64})\.(app|cc|c2s|c3s)$/.exec(value);
+    const stateMatch=/^state-([a-f0-9]{32})\.app$/.exec(value);
+    if(gameMatch){
+      const game=await saveStore.loadPackage(gameMatch[1]);
+      if(!game)throw new Error(t('没有保存此游戏包，请重新导入游戏。'));
+      await loadGame(game,false);await client.resumeFrontend();return;
+    }
+    if(stateMatch){
+      const snapshot=await snapshotStore.load(stateMatch[1]);await validateSnapshot(snapshot);
+      const game=await saveStore.loadPackage(snapshot.meta.game);
+      if(!game)throw new Error(t('没有保存此游戏包，请重新导入游戏。'));
+      if(await resourceIdentity(game)!==snapshot.meta.resources)throw new Error(t('即时存档与当前游戏或资源不匹配。'));
+      if(snapshotIdentity?.hash!==snapshot.meta.game||snapshotIdentity.resources!==snapshot.meta.resources||!loaded)await loadGame(game,false);
+      await snapshotManager.restoreStored(snapshot.meta.id);return;
+    }
+    throw new Error(t('游戏列表已变化，请重新打开前端后重试。'));
+  });
+};
 // Uncomment the measurement markup above to restore this controller.
 const measurement=get('measure-start')?new PerformanceMeasurement(client,()=>loaded&&!busy&&playback==='running',()=>get('game-name').textContent||'',storagePrefix+'performance-report'):undefined;
 const input=new InputState(update=>client.input(update));
-const keyboard=new Keyboard(input,storagePrefix+'keys',renderBindings);
+const keyboard=new Keyboard(input,storagePrefix+'keys',renderBindings,()=>{
+  if(busy||preparingPwa)return;
+  get<HTMLDetailsElement>('frontend-controls').open=false;
+  clearInput();
+  if(frontendActive){if(loaded)client.toggleMenu();}
+  else get<HTMLButtonElement>('retroarch').click();
+});
 function renderBindings() {
   get('bindings').innerHTML=(Object.keys(buttons) as Button[]).map(b=>`<button data-bind="${b}"><strong>${b}</strong> ${keyboard.recordingButton===b?t("请按新键…（Esc 取消）"):keyboard.bindings[b]}</button>`).join('');
   localize(get('bindings'));
@@ -147,7 +195,50 @@ setText(get('audio-status'),t("导入游戏后显示实际音频驱动。"));
 get('audio-enable').hidden=true;
 let controls:ControlSettings|undefined;
 function clearInput() {keyboard.clear();touch.clear();input.clearAll();controls?.cancelDrags();}
-const fullscreen=new GameFullscreen(get('game-stage'),canvas,get<HTMLButtonElement>('exit-fullscreen'),get('fullscreen-notice'),clearInput,()=>{controls?.presentationChanged();enable();});
+const fullscreen=new GameFullscreen(get('game-stage'),canvas,get<HTMLButtonElement>('exit-fullscreen'),get('fullscreen-notice'),clearInput,()=>{
+  controls?.presentationChanged();enable();
+  if(frontendActive&&!fullscreen.active&&!busy)void action(leaveFrontendView);
+});
+async function leaveFrontendView() {
+  get<HTMLDetailsElement>('frontend-controls').open=false;
+  clearInput();await client.leaveFrontend();frontendActive=false;fullscreen.setFrontend(false);
+  await fullscreen.exit();
+  if(client.ready)setPlayback(client.isPaused?'paused':'running','');
+}
+get('retroarch').onclick=()=>{
+  if(busy||preparingPwa)return;
+  get<HTMLDetailsElement>('frontend-controls').open=false;
+  frontendActive=true;fullscreen.setFrontend(true);
+  const presentation=fullscreen.enter(); // Preserve the click's fullscreen permission.
+  void action(async()=>{
+    try {
+      await presentation;clearInput();await measurement?.cancel(t('进入 RetroArch 菜单，测量已结束'));
+      pwa.gameStarted();if(!client.ready)await client.loadFrontend();
+      await client.enterFrontend();setText(get('frontend-status'),'');
+    } catch(error){await leaveFrontendView();throw error;}
+  });
+};
+get('frontend-return').onclick=()=>void action(leaveFrontendView);
+get('frontend-menu').onclick=()=>{get<HTMLDetailsElement>('frontend-controls').open=false;clearInput();client.toggleMenu();canvas.focus({preventScroll:true});};
+get('frontend-import').onclick=()=>{get<HTMLDetailsElement>('frontend-controls').open=false;get<HTMLInputElement>('file').click();};
+get('game-stage').addEventListener('pointerdown',event=>{
+  if(event.target instanceof Node&&!get('frontend-controls').contains(event.target))get<HTMLDetailsElement>('frontend-controls').open=false;
+});
+get('frontend-controls').addEventListener('keydown',event=>{
+  if(event.key==='Escape'&&get<HTMLDetailsElement>('frontend-controls').open){
+    event.preventDefault();event.stopPropagation();get<HTMLDetailsElement>('frontend-controls').open=false;canvas.focus({preventScroll:true});
+  }
+});
+client.onMenuStatus=active=>{
+  setText(get('frontend-menu'),active?(loaded?t('继续游戏'):t('RetroArch 菜单')):t('打开菜单'));
+  if(loaded)setPlayback(active?'paused':client.isPaused?'paused':'running','');
+  else if(client.ready)setPlayback(client.isSuspended?'paused':'running','');
+};
+client.onContentClosed=()=>{
+  clearInput();loaded=false;activeGame=undefined;snapshotIdentity=undefined;
+  get('game-name').textContent='';renderResources();
+  setText(get('frontend-menu'),t('RetroArch 菜单'));setPlayback('stopped','');
+};
 type DisplayMode='pixel'|'smooth'|'integer';
 let displayMode:DisplayMode='smooth';
 try {const saved=localStorage.getItem(storagePrefix+'display');if(saved==='pixel'||saved==='smooth')displayMode=saved;}catch{}
@@ -196,8 +287,11 @@ function enable() {
   get('display-options').querySelectorAll<HTMLInputElement>('input').forEach(radio=>radio.disabled=busy);
   const presentation=get<HTMLButtonElement>('fullscreen');setText(presentation,fullscreen.active?t("退出全屏"):t("全屏"));
   presentation.disabled=!fullscreen.active&&(!loaded||busy);
-  const toggle=get<HTMLButtonElement>('run'); toggle.disabled=busy||!['running','paused'].includes(playback);
-  setText(toggle,playback==='running'?t("暂停"):t("继续"));
+  for(const id of ['run','frontend-pause']){
+    const toggle=get<HTMLButtonElement>(id);toggle.disabled=busy||!client.ready;
+    setText(toggle,client.isSuspended?t("继续"):t("暂停"));
+  }
+  get<HTMLButtonElement>('stop').disabled=busy||preparingPwa||!client.ready;
   get<HTMLInputElement>('file').disabled=busy||preparingPwa;
   const folder=get<HTMLInputElement>('game-folder');if(folder)folder.disabled=busy||preparingPwa;
   for(const id of ['import-game','import-open','import-cancel'])get<HTMLButtonElement>(id).disabled=busy||preparingPwa;
@@ -205,6 +299,9 @@ function enable() {
   get('resource-list').querySelectorAll<HTMLButtonElement>('button').forEach(button=>button.disabled=busy||!loaded);
   fileManager.setEnabled(!busy&&!preparingPwa);
   snapshotManager.setEnabled(!busy&&!preparingPwa);
+  get<HTMLButtonElement>('retroarch').disabled=busy||preparingPwa;
+  for(const id of ['frontend-import','frontend-return'])get<HTMLButtonElement>(id).disabled=busy;
+  get<HTMLButtonElement>('frontend-menu').disabled=busy||!loaded||client.isSuspended;
   if(clearingSiteData)for(const node of app.querySelectorAll<HTMLButtonElement|HTMLInputElement|HTMLSelectElement>('button,input,select'))node.disabled=true;
 }
 function setPlayback(value:Playback,message:string) {playback=value;setText(status,message);renderFps();enable();}
@@ -216,12 +313,25 @@ async function pause(message='') {
   clearInput();const revision=statusRevision;
   try {await client.request('pause');} finally {if(revision===statusRevision)setPlayback('paused',message);}
 }
+async function stopGame(message='') {
+  clearInput();await measurement?.cancel(t('中止运行，测量已结束'));
+  if(frontendActive)await leaveFrontendView();
+  else if(fullscreen.active)await fullscreen.exit();
+  await client.request('dispose');
+  loaded=false;activeGame=undefined;snapshotIdentity=undefined;
+  get('game-name').textContent='';renderResources();
+  setPlayback('stopped',message);
+}
 async function action(job:()=>Promise<unknown>) {
   if(busy)return;busy=true;enable();
-  try {await job();} catch(e) {setText(status,String(e));}
+  try {await job();} catch(e) {
+    setText(status,String(e));setText(get('frontend-status'),String(e));
+    if(frontendActive)get<HTMLDetailsElement>('frontend-controls').open=true;
+  }
   finally {
     try {if(loaded&&playback==='running'&&(visibilityPause||document.hidden))await pause(t("页面隐藏，已暂停。"));}
     catch(e){setPlayback('error',String(e));}
+    if(frontendActive&&!fullscreen.active){try{await leaveFrontendView();}catch(error){setText(status,String(error));}}
     visibilityPause=false;busy=false;enable();
   }
 }
@@ -245,6 +355,7 @@ async function loadGame(game:GameImport,persist=true) {
   renderResources();void fileManager.refresh(hash).catch(()=>{});
   setPlayback('paused',document.hidden?t("已载入。页面隐藏，已暂停。"):t("已载入。"));
   if(!document.hidden&&!visibilityPause)await start();
+  if(frontendActive)await client.enterFrontend();
 }
 async function importPackage(files:MountedFile[]) {
   validateFiles(files);const candidates=files.filter(file=>isGame(file.path));
@@ -253,6 +364,7 @@ async function importPackage(files:MountedFile[]) {
   pendingFiles=files;const choices=get<HTMLSelectElement>('import-game');choices.replaceChildren();
   for(const candidate of candidates)choices.add(new Option(candidate.path,candidate.path));
   get('import-choice').hidden=false;setText(status,t("导入包中有多个游戏，请选择要载入的游戏。"));
+  if(frontendActive)await leaveFrontendView();
 }
 get<HTMLInputElement>('file').onchange=e=>{
   const chooser=e.target as HTMLInputElement,file=chooser.files?.[0];chooser.value='';if(!file)return;
@@ -295,10 +407,13 @@ get<HTMLInputElement>('resource-files').onchange=e=>{
     await loadGame({...activeGame,resources:[...merged.values()]});
   });
 };
-get('run').onclick=()=>void action(async()=>{if(playback==='running')await pause();else if(playback==='paused'){await start();}});
+const togglePlayback=()=>void action(async()=>{if(client.isSuspended)await start();else await pause();});
+get('run').onclick=togglePlayback;
+get('frontend-pause').onclick=togglePlayback;
+get('stop').onclick=()=>void action(()=>stopGame());
 get('reset').onclick=()=>void action(async()=>{clearInput();await client.request('reset');setPlayback('running','');});
 client.onInfo=message=>{const metrics=get('metrics');if(metrics)setText(metrics,message);const audio=client.audioNotice;if(get('audio-status').textContent!==audio)setText(get('audio-status'),audio);renderJit();};
-client.onStatus=(state,error)=>{statusRevision++;clearInput();loaded=false;setPlayback(state==='stopped'?'stopped':'error',error||t("程序已结束。"));};
+client.onStatus=(state,error)=>{statusRevision++;clearInput();loaded=false;setPlayback(state==='stopped'?'stopped':'error',error||t("程序已结束。"));if(frontendActive)void action(leaveFrontendView);};
 window.addEventListener('blur',clearInput);
 window.addEventListener('pagehide',()=>{void client.flushFiles().catch(()=>{});});
 document.addEventListener('visibilitychange',()=>{
@@ -317,4 +432,4 @@ setupSiteCache(pwa.prepared,async()=>{
 });
 
 
-onLanguageChange(()=>{renderBindings();enable();});
+onLanguageChange(()=>{renderBindings();enable();scheduleFrontendSync();});

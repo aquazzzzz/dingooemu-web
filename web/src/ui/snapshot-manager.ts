@@ -37,6 +37,14 @@ export class SnapshotManager {
   private say(value:string){setText(this.message,value);setText(this.quickStatus,value);}
   private get<T extends HTMLElement>(id:string){return this.panel.querySelector<T>('#'+id)!;}
   setEnabled(enabled:boolean){this.enabled=enabled;this.controls();}
+  async saveCurrent(){await this.save();}
+  async restoreStored(id:string){await this.restore(id);}
+  async restoreLatest(){
+    const game=this.hooks.current(),records=await this.store.list();
+    const latest=records.find(state=>state.game===game?.hash&&state.resources===game?.resources);
+    if(!latest)throw new Error(t('当前游戏没有匹配的即时存档。'));
+    await this.restore(latest.id);
+  }
   private visible(){return this.records.filter(s=>!this.filter.value||s.game===this.filter.value);}
   private controls() {
     const current=this.hooks.current(),selected=this.records.find(s=>s.id===this.selected.value),disabled=!this.enabled||this.busy;

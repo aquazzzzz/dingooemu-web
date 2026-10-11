@@ -13,8 +13,9 @@ class Handler(SimpleHTTPRequestHandler):
 parser = argparse.ArgumentParser()
 parser.add_argument("port", type=int)
 parser.add_argument("directory")
+parser.add_argument("--host", default="127.0.0.1", help="Bind address; use 0.0.0.0 for LAN access")
 args = parser.parse_args()
-server = ThreadingHTTPServer(("127.0.0.1", args.port), partial(Handler, directory=args.directory))
+server = ThreadingHTTPServer((args.host, args.port), partial(Handler, directory=args.directory))
 try:
     server.serve_forever()
 except KeyboardInterrupt:
