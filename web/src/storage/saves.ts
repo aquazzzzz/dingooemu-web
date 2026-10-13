@@ -51,21 +51,21 @@ export class SaveStore {
     if(this.closed)throw new Error(t("本站数据正在清除，请刷新页面后再操作。"));
     try {return await this.database;}catch {this.database=this.connect();return this.database;}
   }
-  async savePackage(value:GamePackage) {
+  async savePackage(value:GamePackage,replaceExisting=true) {
     validateFiles(value.resources);if(!/^[a-f0-9]{64}$/.test(value.hash)||value.game.size+value.resources.reduce((n,f)=>n+f.bytes.length,0)>128*1024*1024)throw new Error(t("游戏包无效或超过 128 MiB。"));
     const size=value.game.size+value.resources.reduce((n,f)=>n+f.bytes.length,0);
-    try {await this.writePackage(value,size);return;}catch(error){if(!blobStorageError(error))throw error;}
+    try {await this.writePackage(value,size,replaceExisting);return;}catch(error){if(!blobStorageError(error))throw error;}
     // The Blob transaction has aborted. Read bytes before opening a fresh one.
     const stored:StoredGamePackage={hash:value.hash,name:value.name,game:await value.game.arrayBuffer(),gameType:value.game.type,resources:value.resources,encoding:'bytes-v1'};
-    await this.writePackage(stored,size);
+    await this.writePackage(stored,size,replaceExisting);
   }
-  private async writePackage(value:GamePackage|StoredGamePackage,size:number) {
+  private async writePackage(value:GamePackage|StoredGamePackage,size:number,replaceExisting:boolean) {
     const db=await this.db();return new Promise<void>((resolve,reject)=>{
       const tx=db.transaction(['packages','package-meta'],'readwrite');let error:unknown;
       // Preserve the request error: an aborted transaction may only expose AbortError.
       tx.onerror=event=>{error??=(event.target as IDBRequest).error;};
-      tx.oncomplete=()=>{this.onPackagesChanged();resolve();};tx.onabort=()=>reject(error||tx.error||new Error(t("保存事务中止。")));
-      try {tx.objectStore('packages').put(value);tx.objectStore('package-meta').put({hash:value.hash,name:value.name,size,updatedAt:Date.now()});}catch(cause){error=cause;tx.abort();}
+      tx.oncomplete=()=>{this.onPackagesChanged();resolve();};tx.onabort=()=>reject(!replaceExisting&&(error as DOMException)?.name==='ConstraintError'?new Error(t("本机已有此游戏，未覆盖。需要更新资源时请先移除本地游戏副本。")):error||tx.error||new Error(t("保存事务中止。")));
+      try {const packages=tx.objectStore('packages');if(replaceExisting)packages.put(value);else packages.add(value);tx.objectStore('package-meta').put({hash:value.hash,name:value.name,size,updatedAt:Date.now()});}catch(cause){error=cause;tx.abort();}
     });
   }
   async loadPackage(hash:string):Promise<GamePackage|undefined> {

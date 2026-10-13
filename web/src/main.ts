@@ -17,6 +17,7 @@ import {readFiles,unzip,isGame,chooseGame,type GameImport} from './storage/impor
 import {FileManager,download,sizeLabel} from './ui/file-manager';
 import {SnapshotStore,resourceIdentity,validateSnapshot} from './storage/snapshots';
 import {SnapshotManager,type SnapshotIdentity} from './ui/snapshot-manager';
+import {DeviceTransfer} from './ui/device-transfer';
 import {setupSourceLink} from './source-link';
 const contour='M47 5H79Q82 5 82 8V41Q82 44 85 44H118Q121 44 121 47V79Q121 82 118 82H85Q82 82 82 85V118Q82 121 79 121H47Q44 121 44 118V85Q44 82 41 82H8Q5 82 5 79V47Q5 44 8 44H41Q44 44 44 41V8Q44 5 47 5Z';
 const dpadFace=`<svg class="dpad-face" viewBox="0 0 126 126" aria-hidden="true"><defs><linearGradient id="dpad-face" x2=".8" y2="1"><stop stop-color="#557564"/><stop offset="1" stop-color="#263e32"/></linearGradient><clipPath id="dpad-clip"><path d="${contour}"/></clipPath>${([['Up',50,12],['Right',88,50],['Down',50,88],['Left',12,50]] as const).map(([dir,x,y])=>`<radialGradient id="dpad-glow-${dir}" cx="${x}%" cy="${y}%" r="58%"><stop stop-color="#b5ffd1" stop-opacity=".9"/><stop offset=".45" stop-color="#8debb0" stop-opacity=".36"/><stop offset="1" stop-color="#8debb0" stop-opacity="0"/></radialGradient>`).join('')}</defs><path d="${contour}" transform="translate(0 3)" fill="#18291f"/><path d="${contour}" fill="url(#dpad-face)" stroke="#a9c7b377" stroke-width="1.5"/><g clip-path="url(#dpad-clip)">${['Up','Right','Down','Left'].map(dir=>`<rect class="dpad-light light-${dir}" width="126" height="126" fill="url(#dpad-glow-${dir})"/>`).join('')}</g></svg>`;
@@ -45,7 +46,7 @@ app.innerHTML=`<main><header><div class="header-main"><div class="header-brand">
 <div id="import-choice" class="import-choice" hidden><label for="import-game">选择包内的游戏</label><select id="import-game"></select><button id="import-open">载入</button><button id="import-cancel">取消</button></div>
 <p id="snapshot-status" role="status" aria-live="polite"></p><p id="file-status" role="status" aria-live="polite"></p><details id="resources-details" hidden><summary>本次导入的资源</summary><p>资源随游戏保存在本机；添加或移除资源会重新载入游戏。</p><label class="import-button">添加资源<input id="resource-files" type="file" multiple></label><ul id="resource-list" class="managed-files"></ul></details>
 
-</section><details id="file-manager"></details><details id="snapshot-manager"></details><details><summary>键盘映射</summary><p>点击按键后按新的物理键。重复绑定会交换两个按键。</p><p>F1 打开／收起 RetroArch 菜单；方向键选择，X 确认，Z 返回（默认映射）。</p><div id="bindings" class="bindings"></div><button id="defaults">恢复默认</button></details>
+</section><details id="file-manager"></details><details id="snapshot-manager"></details><details id="device-transfer"></details><details><summary>键盘映射</summary><p>点击按键后按新的物理键。重复绑定会交换两个按键。</p><p>F1 打开／收起 RetroArch 菜单；方向键选择，X 确认，Z 返回（默认映射）。</p><div id="bindings" class="bindings"></div><button id="defaults">恢复默认</button></details>
 <!-- Performance measurement UI temporarily disabled.
 <details open><summary>运行测量</summary><pre id="metrics">等待首帧。</pre><pre id="audio-metrics"></pre>
 <div class="measurement-tools"><label for="measure-note">设备 / 场景备注（可选）</label><input id="measure-note" maxlength="160"><label for="measure-mode">测量模式</label><select id="measure-mode"><option value="light">轻量：帧率和音频（推荐）</option><option value="full">详细：包含每帧核心耗时</option></select><div class="measurement-buttons"><button id="measure-start" disabled>测量 30 秒</button><button id="measure-stop" hidden>提前结束</button><button id="measure-copy" disabled>复制报告</button></div><p id="measure-status" role="status" aria-live="polite">进入卡顿场景后点击测量，期间可以正常操作游戏。</p><output id="measure-summary" hidden aria-label="测量摘要"></output><textarea id="measure-report" readonly hidden rows="16" aria-label="性能测量报告" spellcheck="false"></textarea></div></details>
@@ -90,7 +91,7 @@ const fileManager=new FileManager(get<HTMLDetailsElement>('file-manager'),saveSt
   },
   clearAll:async()=>{
     const controls=[...app.querySelectorAll<HTMLButtonElement|HTMLInputElement|HTMLSelectElement>('button,input,select')].map(node=>({node,disabled:node.disabled}));
-    clearingSiteData=true;enable();
+    clearingSiteData=true;deviceTransfer.close();enable();
     try {
       await pwa.prepared;
       clearInput();keyboard.setBlocked(true);
@@ -117,6 +118,7 @@ const snapshotManager=new SnapshotManager(get<HTMLDetailsElement>('snapshot-mana
   capture:async save=>{clearInput();await measurement?.cancel(t("保存即时存档，测量已结束"));await client.captureSnapshot(save);},
   restore:async snapshot=>{clearInput();await measurement?.cancel(t("读取即时存档，测量已结束"));await client.restoreSnapshot(snapshot);await client.resumeFrontend();setPlayback('running',t("即时读档完成，游戏已继续运行。"));await fileManager.refresh(snapshot.meta.game);},
 },get<HTMLButtonElement>('quick-save'),get<HTMLButtonElement>('quick-load'),get('snapshot-status'));
+const deviceTransfer=new DeviceTransfer(get<HTMLDetailsElement>('device-transfer'),saveStore,snapshotStore,async()=>{await fileManager.refresh();await snapshotManager.refresh();});
 client.onFileStatus=(message,failed)=>{setText(get('file-status'),message);get('file-status').classList.toggle('file-error',failed);};
 client.onFrontendAction=(operation,value)=>{
   if(!frontendActive||clearingSiteData)return;
@@ -299,6 +301,7 @@ function enable() {
   get('resource-list').querySelectorAll<HTMLButtonElement>('button').forEach(button=>button.disabled=busy||!loaded);
   fileManager.setEnabled(!busy&&!preparingPwa);
   snapshotManager.setEnabled(!busy&&!preparingPwa);
+  deviceTransfer.setEnabled(!busy&&!preparingPwa&&!clearingSiteData);
   get<HTMLButtonElement>('retroarch').disabled=busy||preparingPwa;
   for(const id of ['frontend-import','frontend-return'])get<HTMLButtonElement>(id).disabled=busy;
   get<HTMLButtonElement>('frontend-menu').disabled=busy||!loaded||client.isSuspended;

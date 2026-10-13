@@ -22,11 +22,11 @@
     },
     "runtime/audioworklet/dingooemu_libretro.js": {
       "bytes": 368354,
-      "sha256": "ee44f36618955912957642f4ad98fd9316c5e8e6019537d42d4d5fedc583f8f1"
+      "sha256": "502ede1c0cb686324d8f8247caaa6e098719e880a64c869ba2d4461bfd7d8cb6"
     },
     "runtime/audioworklet/dingooemu_libretro.wasm": {
-      "bytes": 3835374,
-      "sha256": "ead4638ac6cf314a25d92b352513efd25dab43a8486dfdcaaaeae0aa197289e7"
+      "bytes": 3836922,
+      "sha256": "3803d40e53add1bf257a4ddc2c0eaf715588cf67729479378f87b15ad8b07fc6"
     },
     "runtime/dingooemu_libretro.info": {
       "bytes": 782,
@@ -37,8 +37,8 @@
       "sha256": "c4437be4f1149ec2909641361a9b3fa50d835d6f954d1e434b5c337cdc122da3"
     },
     "runtime/dingooemu_libretro.wasm": {
-      "bytes": 3679268,
-      "sha256": "71bde7a8f1334e041df175a464efd54b0e51d2ae4ee6ac65b1501de92cc4665e"
+      "bytes": 3681220,
+      "sha256": "f76996c7154a9b4b32adfa74ca77eff3c5fff04de5813b900bdafb821d3d4a9d"
     },
     "runtime/font.ttf": {
       "bytes": 4474312,
@@ -50,11 +50,11 @@
     },
     "runtime/worker/dingooemu_libretro.js": {
       "bytes": 376322,
-      "sha256": "91102ea35e900bfda1280fc559ce9770030ce5b58cd98799769c63919c33f349"
+      "sha256": "5614bb895c9436ca793aca96334b4e788364c811fff9f169ba50a66c62d5827b"
     },
     "runtime/worker/dingooemu_libretro.wasm": {
-      "bytes": 3837924,
-      "sha256": "0880fce045fa27d76c3b4c6700ab4d1d3d2ec950f90492ae4ca6c0aa9b48092c"
+      "bytes": 3839472,
+      "sha256": "3d1370ad1958071b7efb3a9591189d9b0fc292bd62c6a09165a971f5a67f28e7"
     },
     "runtime/frontend/assets.bin": {
       "bytes": 4108309,
@@ -66,8 +66,8 @@
     }
   },
   "runtime_build": {
-    "baseline_git_commit": "22c87ade74896d2f98491a8d35895d89a4e7f3b4",
-    "core_and_bridge_source_sha256": "f6bba2a4d2790dcbea30c64aaffd304e7349aceb4c83c7348059dae9004d80de",
+    "baseline_git_commit": "55e456cbc794e39f1d92470d1bccc0aff8ea93ec",
+    "core_and_bridge_source_sha256": "dc99dd07a020f199bc3e1d89237ac9454709bf377a24f4904b1298d8ca23f316",
     "features": [
       "wasm-jit"
     ],
@@ -99,7 +99,7 @@
       "enabled_by_default": true,
       "live_switch": "Page selector; preserves guest state; runs on the owning core thread",
       "scope": "A320 integer/MUL, MULT/MULTU, MADD/MADDU, MFHI/MFLO, MOVZ/MOVN and bounded RAM/framebuffer prefixes; terminal BEQ/BNE delay pairs and bounded single-store self-loops without HI/LO writes",
-      "validation": "See docs/wasm-jit-hilo.md for current semantics, validation, performance and JIT-off tradeoff; docs/wasm-jit-ui.md for live-switch checks; docs/wasm-jit-framebuffer-install.md and docs/wasm-jit-framebuffer.md for prior adoption and measurements"
+      "validation": "See docs/wasm-jit-generated-guards.md for current shared/JIT-on full-code guards in generated RAM blocks, A-H complete-state/core screen, 32 browser ABBA samples and 5-minute H stability; docs/wasm-jit-fast-fallback.md for retained fallback optimization; docs/wasm-jit-hilo.md for HI/LO semantics and JIT-off tradeoff; docs/wasm-jit-ui.md for live-switch checks; docs/wasm-jit-framebuffer-install.md and docs/wasm-jit-framebuffer.md for prior adoption and measurements"
     }
   }
 }

@@ -35,7 +35,7 @@ struct Entry {
     request: u32,
     table_index: Option<u32>,
     code: Vec<u8>,
-    branch: bool,
+    flags: u8,
 }
 
 // Dense cached entry hints are read on every dispatch. Keep their wasm32
@@ -254,6 +254,30 @@ impl Engine {
         false
     }
 
+    /// Let a fetched block with a current negative hint reach the interpreter
+    /// without entering the compiled-chain setup. Cold/refetched blocks still
+    /// classify through execute; enabled/session, PC and full generation apply.
+    #[inline]
+    pub(crate) fn skip_cached_unsupported(
+        &mut self,
+        start: u32,
+        limit: usize,
+        hint: &CacheHint,
+    ) -> bool {
+        if limit != 0
+            && self.is_enabled()
+            && hint.generation == self.generation
+            && hint.start == start
+            && hint.unsupported
+        {
+            self.unsupported_dispatches += 1;
+            #[cfg(feature = "wasm-jit-profile")]
+            self.profile.fallback(4);
+            return true;
+        }
+        false
+    }
+
     pub(crate) fn execute(
         &mut self,
         start: u32,
@@ -284,9 +308,13 @@ impl Engine {
             return Execution::Fallback;
         }
         if entry.request != 0 {
-            // Check the complete prefix on every call, even while compilation
-            // is pending. This also detects writes through frontend RAM pointers.
-            if !memory.instruction_bytes_match(start, &entry.code) {
+            let instruction_count = entry.code.len() / 4;
+            // Only ready RAM modules with sufficient budget check their code
+            // internally. Pending, short-budget and unusual mappings still use
+            // the original full Rust check before polling or interpreting.
+            let generated_guard =
+                entry.flags & 2 != 0 && entry.table_index.is_some() && limit >= instruction_count;
+            if !generated_guard && !memory.instruction_bytes_match(start, &entry.code) {
                 #[cfg(feature = "wasm-jit-profile")]
                 if self.profile.enabled {
                     self.profile.code_mismatches += 1;
@@ -319,7 +347,6 @@ impl Engine {
                     value => entry.table_index = Some(value as u32 - 1),
                 }
             }
-            let instruction_count = entry.code.len() / 4;
             if limit < instruction_count {
                 #[cfg(feature = "wasm-jit-profile")]
                 self.profile.fallback(6);
@@ -331,7 +358,7 @@ impl Engine {
                 // indirect function table. The bridge only installs ABI-v4 funcs.
                 let function: BlockFunction =
                     unsafe { std::mem::transmute(entry.table_index.unwrap() as usize) };
-                let (delay, target, pending) = if entry.branch {
+                let (delay, target, pending) = if entry.flags & 1 != 0 {
                     cpu.wasm_jit_branch_state()
                 } else {
                     (0, 0, 0)
@@ -349,6 +376,20 @@ impl Engine {
                 let result = unsafe { function(&mut context, limit as u32) };
                 let completed = result & u64::from(u32::MAX);
                 let reason = result & !u64::from(u32::MAX);
+                if entry.flags & 2 != 0 && reason == emitter::EXIT_STALE_CODE && completed == 0 {
+                    #[cfg(feature = "wasm-jit-profile")]
+                    if self.profile.enabled {
+                        self.profile.code_mismatches += 1;
+                    }
+                    bridge::forget(self.session, entry.request);
+                    self.requests -= 1;
+                    *entry = Entry {
+                        start,
+                        ..Entry::default()
+                    };
+                    *hint = CacheHint::default();
+                    return Execution::StaleCode;
+                }
                 if reason == emitter::EXIT_MEMORY {
                     self.memory_exits += 1;
                 }
@@ -357,7 +398,7 @@ impl Engine {
                         && completed == instruction_count as u64)
                         || (reason == emitter::EXIT_MEMORY && completed < instruction_count as u64))
                 {
-                    if entry.branch {
+                    if entry.flags & 1 != 0 {
                         if completed >= instruction_count as u64 - 1 {
                             self.branch_executions += 1;
                         }
@@ -424,11 +465,12 @@ impl Engine {
             }
             return Execution::StaleCode;
         }
-        let module = emitter::emit(start, instructions, self.shared);
+        let code_ram_offset = memory.jit_code_ram_offset(start, code.len());
+        let module = emitter::emit_guarded(start, instructions, self.shared, code_ram_offset);
         debug_assert_eq!(module.instructions, count);
         let request = bridge::submit(self.session, &module.bytes);
         if request != 0 {
-            entry.branch = module.branch;
+            entry.flags = u8::from(module.branch) | (u8::from(module.code_guard) << 1);
             entry.request = request;
             entry.code = code;
             self.requests += 1;

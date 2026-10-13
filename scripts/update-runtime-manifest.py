@@ -65,7 +65,7 @@ def main():
             "abi": 4, "enabled_by_default": True,
             "live_switch": "Page selector; preserves guest state; runs on the owning core thread",
             "scope": "A320 integer/MUL, MULT/MULTU, MADD/MADDU, MFHI/MFLO, MOVZ/MOVN and bounded RAM/framebuffer prefixes; terminal BEQ/BNE delay pairs and bounded single-store self-loops without HI/LO writes",
-            "validation": "See docs/wasm-jit-hilo.md for current semantics, validation, performance and JIT-off tradeoff; docs/wasm-jit-ui.md for live-switch checks; docs/wasm-jit-framebuffer-install.md and docs/wasm-jit-framebuffer.md for prior adoption and measurements"
+            "validation": "See docs/wasm-jit-generated-guards.md for current shared/JIT-on full-code guards in generated RAM blocks, A-H complete-state/core screen, 32 browser ABBA samples and 5-minute H stability; docs/wasm-jit-fast-fallback.md for retained fallback optimization; docs/wasm-jit-hilo.md for HI/LO semantics and JIT-off tradeoff; docs/wasm-jit-ui.md for live-switch checks; docs/wasm-jit-framebuffer-install.md and docs/wasm-jit-framebuffer.md for prior adoption and measurements"
         }
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")

@@ -924,7 +924,15 @@ impl Runtime {
         };
 
         #[cfg(feature = "wasm-jit")]
-        if WASM_JIT && !self.cpu.branch_delay && self.cpu.is_running() {
+        if WASM_JIT
+            && !self.cpu.branch_delay
+            && self.cpu.is_running()
+            && !self.wasm_jit.skip_cached_unsupported(
+                start,
+                instruction_limit,
+                &self.instruction_blocks[cache_index].wasm_jit_hint,
+            )
+        {
             let mut completed_total = 0u64;
             let mut block_start = start;
             let mut block_index = cache_index;

@@ -244,6 +244,18 @@ impl Memory {
         self.read_u32(addr)
     }
 
+    /// A generated constant guard can address only a complete RAM span.
+    /// Other mappings retain the per-fetch guard in Rust.
+    #[cfg(feature = "wasm-jit")]
+    pub(crate) fn jit_code_ram_offset(&self, start: u32, bytes: usize) -> Option<u32> {
+        if bytes == 0 || bytes % 4 != 0 {
+            return None;
+        }
+        let physical = self.translate_address(start) as usize;
+        let end = physical.checked_add(bytes)?;
+        (end <= self.ram.len()).then_some(physical as u32)
+    }
+
     /// Check every byte of a JIT prefix, including untracked frontend writes.
     /// Translate/bounds-check contiguous RAM once. Unusual mappings and virtual
     /// wraparound keep the existing per-instruction fetch semantics.

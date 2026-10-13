@@ -5,7 +5,7 @@ use crate::a320::{
     cpu::{Cpu, Registers},
     memory::Memory,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     mem::{offset_of, size_of},
     path::PathBuf,
@@ -369,26 +369,29 @@ fn group(
 }
 
 fn ram_patches(memory: &Memory) -> Value {
-    json!(
-        [
-            0usize,
-            0x40,
-            0x0fc0,
-            0x1000,
-            0x1040,
-            (crate::a320::memory::RAM_SIZE - 64) as usize
-        ]
-        .map(|offset| {
-            json!({"offset": offset, "bytes": &memory.as_slice()[offset..offset + 64]})
-        })
-    )
+    json!([
+        0usize,
+        0x40,
+        0x0fc0,
+        0x1000,
+        0x1040,
+        (crate::a320::memory::RAM_SIZE - 64) as usize
+    ]
+    .map(|offset| { json!({"offset": offset, "bytes": &memory.as_slice()[offset..offset + 64]}) }))
 }
 
 fn fb_patches(memory: &Memory) -> Value {
-    json!([0usize, 0x40, 0xfc0, 0x1000, 0x1040, 0x2000, 0x2020,
-        crate::a320::memory::FRAMEBUFFER_MAP_SIZE - 64].map(|offset| {
-        json!({"offset": offset, "bytes": &memory.framebuffer()[offset..offset+64]})
-    }))
+    json!([
+        0usize,
+        0x40,
+        0xfc0,
+        0x1000,
+        0x1040,
+        0x2000,
+        0x2020,
+        crate::a320::memory::FRAMEBUFFER_MAP_SIZE - 64
+    ]
+    .map(|offset| { json!({"offset": offset, "bytes": &memory.framebuffer()[offset..offset+64]}) }))
 }
 
 fn memory_group(
@@ -412,8 +415,15 @@ fn memory_group_budget(
     let count = emitter::prefix_len(words);
     memory.as_mut_slice().fill(0);
     memory.framebuffer_mut().fill(0);
-    for offset in [0usize,0x1000,0x2000,crate::a320::memory::FRAMEBUFFER_MAP_SIZE-64] {
-        for i in 0..64 { memory.framebuffer_mut()[offset+i]=(i as u8).wrapping_mul(97).wrapping_add(0x91); }
+    for offset in [
+        0usize,
+        0x1000,
+        0x2000,
+        crate::a320::memory::FRAMEBUFFER_MAP_SIZE - 64,
+    ] {
+        for i in 0..64 {
+            memory.framebuffer_mut()[offset + i] = (i as u8).wrapping_mul(97).wrapping_add(0x91);
+        }
     }
     for offset in [
         0usize,
@@ -463,10 +473,13 @@ fn memory_group_budget(
                 };
                 // The emitted fast path exits before a non-RAM operation. Its
                 // eventual error/MMIO effect remains the interpreter's responsibility.
-                let fb_offset = crate::a320::memory::LCD_FRAMEBUFFER_ALIASES.iter().find_map(|base| {
-                    let offset=addr.wrapping_sub(*base);
-                    (offset <= crate::a320::memory::FRAMEBUFFER_MAP_SIZE as u32 - width).then_some(offset)
-                });
+                let fb_offset = crate::a320::memory::LCD_FRAMEBUFFER_ALIASES
+                    .iter()
+                    .find_map(|base| {
+                        let offset = addr.wrapping_sub(*base);
+                        (offset <= crate::a320::memory::FRAMEBUFFER_MAP_SIZE as u32 - width)
+                            .then_some(offset)
+                    });
                 if physical > crate::a320::memory::RAM_SIZE - width && fb_offset.is_none() {
                     reason = 4;
                     break 'outer;
@@ -480,12 +493,17 @@ fn memory_group_budget(
                         } else {
                             code
                         };
-                        if let Some(fb)=fb_offset {
-                            crate::a320::memory::LCD_FRAMEBUFFER_ALIASES.iter().any(|base| {
-                                let offset=input.pc.wrapping_add(offset as u32).wrapping_sub(*base);
-                                offset>=fb && offset<fb+width
-                            })
-                        } else { code >= physical && code < physical + width }
+                        if let Some(fb) = fb_offset {
+                            crate::a320::memory::LCD_FRAMEBUFFER_ALIASES
+                                .iter()
+                                .any(|base| {
+                                    let offset =
+                                        input.pc.wrapping_add(offset as u32).wrapping_sub(*base);
+                                    offset >= fb && offset < fb + width
+                                })
+                        } else {
+                            code >= physical && code < physical + width
+                        }
                     })
                 {
                     reason = 4;
@@ -590,21 +608,72 @@ fn fixtures() -> Value {
     }
     // New HI/LO and conditional moves: extremes, dirty R0, all aliases,
     // product/accumulator overflow and dependent reads come from the CPU oracle.
-    for (name, operation) in [("mult",0x18), ("multu",0x19), ("madd",0x70000000), ("maddu",0x70000001), ("mfhi",0x10), ("mflo",0x12), ("movz",0x0a), ("movn",0x0b)] {
-        for (alias,(rs,rt,rd)) in [(1,2,3),(1,2,1),(1,2,2),(0,2,3),(1,0,3),(1,2,0)].into_iter().enumerate() {
-            let word=operation|(rs<<21)|(rt<<16)|(rd<<11);
-            let inputs=VALUES.into_iter().flat_map(|a|VALUES.into_iter().map(move |b| {
-                let mut regs=Registers::new(0x80001000);regs.gpr.fill(0xdeadbeef);
-                regs.gpr[1]=a;regs.gpr[2]=b;regs.hi=a^0x81234567;regs.lo=b^0x89abcdef;regs
-            })).collect();
-            groups.push(group(format!("hilo-{name}-{alias}"),0x80001000,&[word,0x00001812,0x00002010,0x24840001],inputs,&mut memory));
+    for (name, operation) in [
+        ("mult", 0x18),
+        ("multu", 0x19),
+        ("madd", 0x70000000),
+        ("maddu", 0x70000001),
+        ("mfhi", 0x10),
+        ("mflo", 0x12),
+        ("movz", 0x0a),
+        ("movn", 0x0b),
+    ] {
+        for (alias, (rs, rt, rd)) in [
+            (1, 2, 3),
+            (1, 2, 1),
+            (1, 2, 2),
+            (0, 2, 3),
+            (1, 0, 3),
+            (1, 2, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let word = operation | (rs << 21) | (rt << 16) | (rd << 11);
+            let inputs = VALUES
+                .into_iter()
+                .flat_map(|a| {
+                    VALUES.into_iter().map(move |b| {
+                        let mut regs = Registers::new(0x80001000);
+                        regs.gpr.fill(0xdeadbeef);
+                        regs.gpr[1] = a;
+                        regs.gpr[2] = b;
+                        regs.hi = a ^ 0x81234567;
+                        regs.lo = b ^ 0x89abcdef;
+                        regs
+                    })
+                })
+                .collect();
+            groups.push(group(
+                format!("hilo-{name}-{alias}"),
+                0x80001000,
+                &[word, 0x00001812, 0x00002010, 0x24840001],
+                inputs,
+                &mut memory,
+            ));
         }
     }
-    for (index,(a,b)) in VALUES.into_iter().flat_map(|a|VALUES.into_iter().map(move |b|(a,b))).enumerate() {
-        let mut regs=Registers::new(0x80001000);regs.gpr.fill(0xdeadbeef);regs.gpr[1]=a;regs.gpr[2]=b;
-        regs.hi=a;regs.lo=b;
-        let words=[0x00220018,0x70220000,0x00001812,0x0061200a,0x0043280b,0x00003010,0x70221802];
-        groups.push(group(format!("hilo-chain-{index}"),regs.pc,&words,vec![regs],&mut memory));
+    for (index, (a, b)) in VALUES
+        .into_iter()
+        .flat_map(|a| VALUES.into_iter().map(move |b| (a, b)))
+        .enumerate()
+    {
+        let mut regs = Registers::new(0x80001000);
+        regs.gpr.fill(0xdeadbeef);
+        regs.gpr[1] = a;
+        regs.gpr[2] = b;
+        regs.hi = a;
+        regs.lo = b;
+        let words = [
+            0x00220018, 0x70220000, 0x00001812, 0x0061200a, 0x0043280b, 0x00003010, 0x70221802,
+        ];
+        groups.push(group(
+            format!("hilo-chain-{index}"),
+            regs.pc,
+            &words,
+            vec![regs],
+            &mut memory,
+        ));
     }
     // Data-dependent sequences detect interactions that isolated instructions miss.
     for index in 0..256 {
@@ -708,15 +777,40 @@ fn fixtures() -> Value {
         }
     }
     let mut memory_groups = Vec::new();
-    for (index,address) in [0u32,0x1000,0x1fffffd,0x02000000,0x10000000,0x10025ffd,0x13080004].into_iter().enumerate() {
-        let mut input=Registers::new(0x80001000);input.gpr.fill(0xdeadbeef);
-        input.gpr[1]=0x80000000;input.gpr[2]=0xffffffff;input.gpr[7]=address;input.hi=0xffffffff;input.lo=0xffffffff;
-        for (name,words) in [
-            ("before-load",vec![0x00220018,0x70220000,0x00001812,0x8ce40000,0x00002810]),
-            ("before-store",vec![0x00220019,0x70220001,0x00001812,0xace30000,0x00002810]),
-            ("delay-madd",vec![0x00220018,0x00001812,0x14220001,0x70220000]),
+    for (index, address) in [
+        0u32, 0x1000, 0x1fffffd, 0x02000000, 0x10000000, 0x10025ffd, 0x13080004,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut input = Registers::new(0x80001000);
+        input.gpr.fill(0xdeadbeef);
+        input.gpr[1] = 0x80000000;
+        input.gpr[2] = 0xffffffff;
+        input.gpr[7] = address;
+        input.hi = 0xffffffff;
+        input.lo = 0xffffffff;
+        for (name, words) in [
+            (
+                "before-load",
+                vec![0x00220018, 0x70220000, 0x00001812, 0x8ce40000, 0x00002810],
+            ),
+            (
+                "before-store",
+                vec![0x00220019, 0x70220001, 0x00001812, 0xace30000, 0x00002810],
+            ),
+            (
+                "delay-madd",
+                vec![0x00220018, 0x00001812, 0x14220001, 0x70220000],
+            ),
         ] {
-            memory_groups.push(memory_group(format!("hilo-partial-{name}-{index}"),&words,input.clone(),&mut memory,&[]));
+            memory_groups.push(memory_group(
+                format!("hilo-partial-{name}-{index}"),
+                &words,
+                input.clone(),
+                &mut memory,
+                &[],
+            ));
         }
     }
 
@@ -764,16 +858,47 @@ fn fixtures() -> Value {
             }
         }
     }
-    for base in [0x94000000u32,0x14000000,0x90000000,0x10000000,0xb4000000,0xb0000000,0x13080000] {
-        for opcode in [0x20u32,0x21,0x23,0x24,0x25,0x28,0x29,0x2b] {
-            let width=match opcode {0x20|0x24|0x28=>1,0x21|0x25|0x29=>2,_=>4};
-            for offset in [0u32,1,0x2020,crate::a320::memory::FRAMEBUFFER_MAP_SIZE as u32-width,
-                crate::a320::memory::FRAMEBUFFER_MAP_SIZE as u32-width+1,crate::a320::memory::FRAMEBUFFER_MAP_SIZE as u32,u32::MAX] {
-                for rt in [0u32,1,2] {
-                    let mut regs=Registers::new(0x80001000); regs.gpr.fill(0xdeadbeef);
-                    regs.gpr[1]=base.wrapping_add(offset); regs.gpr[2]=0xf1807ffe;
-                    memory_groups.push(memory_group(format!("framebuffer-{base:x}-{opcode:x}-{offset:x}-{rt}"),
-                        &[0x24630001,0,(opcode<<26)|(1<<21)|(rt<<16),0x24840001],regs,&mut memory,&[]));
+    for base in [
+        0x94000000u32,
+        0x14000000,
+        0x90000000,
+        0x10000000,
+        0xb4000000,
+        0xb0000000,
+        0x13080000,
+    ] {
+        for opcode in [0x20u32, 0x21, 0x23, 0x24, 0x25, 0x28, 0x29, 0x2b] {
+            let width = match opcode {
+                0x20 | 0x24 | 0x28 => 1,
+                0x21 | 0x25 | 0x29 => 2,
+                _ => 4,
+            };
+            for offset in [
+                0u32,
+                1,
+                0x2020,
+                crate::a320::memory::FRAMEBUFFER_MAP_SIZE as u32 - width,
+                crate::a320::memory::FRAMEBUFFER_MAP_SIZE as u32 - width + 1,
+                crate::a320::memory::FRAMEBUFFER_MAP_SIZE as u32,
+                u32::MAX,
+            ] {
+                for rt in [0u32, 1, 2] {
+                    let mut regs = Registers::new(0x80001000);
+                    regs.gpr.fill(0xdeadbeef);
+                    regs.gpr[1] = base.wrapping_add(offset);
+                    regs.gpr[2] = 0xf1807ffe;
+                    memory_groups.push(memory_group(
+                        format!("framebuffer-{base:x}-{opcode:x}-{offset:x}-{rt}"),
+                        &[
+                            0x24630001,
+                            0,
+                            (opcode << 26) | (1 << 21) | (rt << 16),
+                            0x24840001,
+                        ],
+                        regs,
+                        &mut memory,
+                        &[],
+                    ));
                 }
             }
         }
@@ -782,10 +907,25 @@ fn fixtures() -> Value {
     if !cfg!(debug_assertions) {
         for code_base in crate::a320::memory::LCD_FRAMEBUFFER_ALIASES {
             for data_base in crate::a320::memory::LCD_FRAMEBUFFER_ALIASES {
-                for offset in [0x1000u32,0x1001,0x1040,crate::a320::memory::FRAMEBUFFER_MAP_SIZE as u32-2] {
-                    let mut regs=Registers::new(code_base+0x1000); regs.gpr[5]=data_base+offset; regs.gpr[3]=0xdeadbeef; regs.gpr[4]=3;
-                    let words=[0x24630001,0xa4a30000,0x2484ffff,0x1480fffc,0];
-                    memory_groups.push(memory_group_budget(format!("framebuffer-loop-{code_base:x}-{data_base:x}-{offset:x}"),&words,regs,&mut memory,&[],Some(15)));
+                for offset in [
+                    0x1000u32,
+                    0x1001,
+                    0x1040,
+                    crate::a320::memory::FRAMEBUFFER_MAP_SIZE as u32 - 2,
+                ] {
+                    let mut regs = Registers::new(code_base + 0x1000);
+                    regs.gpr[5] = data_base + offset;
+                    regs.gpr[3] = 0xdeadbeef;
+                    regs.gpr[4] = 3;
+                    let words = [0x24630001, 0xa4a30000, 0x2484ffff, 0x1480fffc, 0];
+                    memory_groups.push(memory_group_budget(
+                        format!("framebuffer-loop-{code_base:x}-{data_base:x}-{offset:x}"),
+                        &words,
+                        regs,
+                        &mut memory,
+                        &[],
+                        Some(15),
+                    ));
                 }
             }
         }
@@ -1131,4 +1271,225 @@ fn fallback_metric_counts_enabled_dispatches_across_cache_clears() {
     assert_eq!(engine.metric(5), 4.0);
     engine.execute(0x8000_1000, &words, 0, &mut cpu, &mut memory, &mut hint);
     assert_eq!(engine.metric(5), 4.0);
+}
+
+#[test]
+fn direct_negative_hint_requires_current_pc_generation_session_and_budget() {
+    let mut engine = Engine::new();
+    engine.generation = (1u64 << 32) + 9;
+    let hint = CacheHint {
+        generation: engine.generation,
+        index: usize::MAX,
+        start: 0x1000,
+        unsupported: true,
+    };
+    assert!(!engine.skip_cached_unsupported(0x1000, 4, &hint));
+    engine.enabled = true;
+    assert!(!engine.skip_cached_unsupported(0x1000, 4, &hint));
+    engine.session = 1;
+    assert!(!engine.skip_cached_unsupported(0x1000, 0, &hint));
+    assert!(!engine.skip_cached_unsupported(0x5000, 4, &hint));
+    assert!(!engine.skip_cached_unsupported(
+        0x1000,
+        4,
+        &CacheHint {
+            unsupported: false,
+            ..hint
+        }
+    ));
+    assert!(!engine.skip_cached_unsupported(
+        0x1000,
+        4,
+        &CacheHint {
+            generation: 9,
+            ..hint
+        }
+    ));
+    assert_eq!(engine.metric(9), 0.0);
+    assert!(engine.skip_cached_unsupported(0x1000, 4, &hint));
+    assert_eq!(engine.metric(9), 1.0);
+    assert_eq!(engine.metric(5), 1.0);
+    engine.clear();
+    assert!(!engine.skip_cached_unsupported(0x1000, 4, &hint));
+    assert_eq!(engine.generation, (1u64 << 32) + 10);
+    let fresh = CacheHint {
+        generation: engine.generation,
+        ..hint
+    };
+    assert!(engine.skip_cached_unsupported(0x1000, 4, &fresh));
+    engine.set_enabled(false);
+    assert!(!engine.skip_cached_unsupported(0x1000, 4, &fresh));
+}
+
+#[test]
+fn direct_negative_hint_preserves_normal_fallback_metrics_and_guest_state() {
+    let mut direct = Engine::new();
+    let mut normal = Engine::new();
+    direct.enabled = true;
+    direct.session = 1;
+    normal.enabled = true;
+    normal.session = 1;
+    let hint = CacheHint {
+        generation: 1,
+        index: usize::MAX,
+        start: 0x1000,
+        unsupported: true,
+    };
+    let mut normal_hint = hint;
+    let mut cpu = Cpu::new(0x1000);
+    let mut memory = Memory::new();
+    let before_pc = cpu.regs.pc;
+    let before_instructions = cpu.instruction_count;
+    for _ in 0..8 {
+        assert!(direct.skip_cached_unsupported(0x1000, 4, &hint));
+        assert!(matches!(
+            normal.execute(
+                0x1000,
+                &[0x1022_0001, 0],
+                4,
+                &mut cpu,
+                &mut memory,
+                &mut normal_hint
+            ),
+            super::Execution::Fallback
+        ));
+    }
+    for metric in 0..=12 {
+        assert_eq!(direct.metric(metric), normal.metric(metric));
+    }
+    assert_eq!(cpu.regs.pc, before_pc);
+    assert_eq!(cpu.instruction_count, before_instructions);
+    assert!(direct.slots.is_empty() && normal.slots.is_empty());
+}
+
+#[test]
+fn generated_code_guard_only_accepts_complete_ram_spans() {
+    let memory = Memory::new();
+    for alias in [0u32, 0x8000_0000, 0xa000_0000] {
+        for (offset, count, expected) in [
+            (0, 16, Some(0)),
+            (1, 20, Some(1)),
+            (0x01ff_fff0, 16, Some(0x01ff_fff0)),
+            (0x01ff_fff1, 16, None),
+            (0x0200_0000, 4, None),
+        ] {
+            assert_eq!(memory.jit_code_ram_offset(alias | offset, count), expected);
+        }
+    }
+    for start in [
+        0x9400_0000,
+        0x1400_0000,
+        0x1000_0000,
+        0x9000_0000,
+        0xc000_0000,
+        0xffff_fffc,
+        0x1308_0004,
+    ] {
+        assert_eq!(memory.jit_code_ram_offset(start, 16), None);
+    }
+    assert_eq!(memory.jit_code_ram_offset(0x1000, 0), None);
+    assert_eq!(memory.jit_code_ram_offset(0x1000, 3), None);
+}
+
+#[test]
+fn generated_constant_guards_validate_all_bytes_without_mutation() {
+    let mut groups = Vec::new();
+    let mut memory = Memory::new();
+    for count in [4usize, 5, 8, 15, 16, 31, 32, 63, 64] {
+        for physical in [
+            0x1000u32,
+            0x1001,
+            0x1003,
+            crate::a320::memory::RAM_SIZE - count as u32 * 4,
+        ] {
+            for alias in [0u32, 0x8000_0000, 0xa000_0000] {
+                let start = alias | physical;
+                let words: Vec<u32> = (0..count)
+                    .map(|index| match index % 4 {
+                        0 => 0x2463_0001,
+                        1 => 0x3884_fedc,
+                        2 => 0x0064_0019,
+                        _ => 0,
+                    })
+                    .collect();
+                let mut cpu = Cpu::new(start);
+                cpu.start();
+                cpu.regs.gpr.fill(0xdead_beef);
+                cpu.regs.gpr[3] = 0xffff_ffff;
+                cpu.regs.gpr[4] = 0x8000_0000;
+                cpu.regs.hi = 0x1234_5678;
+                cpu.regs.lo = 0x8765_4321;
+                cpu.commit_wasm_jit_branch_state(0, 0x8765_4321, 1);
+                let before = cpu_state(&cpu);
+                for &word in &words {
+                    cpu.step_fetched_unaccounted(word, &mut memory).unwrap();
+                }
+                let after = cpu_state(&cpu);
+                let regular = emitter::emit_guarded(start, &words, false, Some(physical));
+                let shared = emitter::emit_guarded(start, &words, true, Some(physical));
+                assert!(regular.code_guard && shared.code_guard);
+                assert_eq!(regular.instructions, count);
+                groups.push(json!({"start":start,"physical":physical,"words":words,"count":count,"before":before,"after":after,"regular":regular.bytes,"shared":shared.bytes}));
+            }
+        }
+    }
+    let fixture = json!({"registers":{"size":size_of::<Registers>(),"gpr":offset_of!(Registers,gpr),"pc":offset_of!(Registers,pc),"hi":offset_of!(Registers,hi),"lo":offset_of!(Registers,lo)},"groups":groups});
+    let directory =
+        std::env::temp_dir().join(format!("dingoo-generated-guard-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("fixtures.json");
+    std::fs::write(&path, serde_json::to_vec(&fixture).unwrap()).unwrap();
+    let runner = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../scripts/tests/wasm-jit-generated-guard.mjs");
+    let output = Command::new("node")
+        .arg(runner)
+        .arg(&path)
+        .output()
+        .expect("node guard runner");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    eprintln!("{}", String::from_utf8_lossy(&output.stdout));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn pending_short_budget_and_unguarded_entries_keep_full_rust_code_checks() {
+    for (table_index, flags, budget) in [(None, 2, 4), (Some(1), 2, 3), (Some(1), 0, 4)] {
+        let mut engine = Engine::new();
+        engine.enabled = true;
+        engine.session = 1;
+        let mut hint = CacheHint::default();
+        let index = engine.entry_index(0x8000_1000, &mut hint);
+        let entry = &mut engine.slots[index];
+        entry.request = 1;
+        entry.code = vec![1; 16];
+        entry.flags = flags;
+        entry.table_index = table_index;
+        engine.requests = 1;
+        let mut cpu = Cpu::new(0x8000_1000);
+        cpu.start();
+        cpu.regs.gpr[0] = 0xdead_beef;
+        let before = bincode::serialize(&cpu).unwrap();
+        let mut memory = Memory::new();
+        assert!(matches!(
+            engine.execute(
+                0x8000_1000,
+                &[0; 4],
+                budget,
+                &mut cpu,
+                &mut memory,
+                &mut hint
+            ),
+            super::Execution::StaleCode
+        ));
+        assert_eq!(bincode::serialize(&cpu).unwrap(), before);
+        assert_eq!(engine.requests, 0);
+        assert_eq!(engine.slots[index].request, 0);
+        assert_eq!(engine.slots[index].flags, 0);
+        assert_eq!(hint.generation, 0);
+    }
 }

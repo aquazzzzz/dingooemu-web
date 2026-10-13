@@ -274,3 +274,15 @@ body.game-fullscreen .site-about{display:none}
 .immersive.retroarch-frontend .touch,.retroarch-frontend .control-settings,.retroarch-frontend .control-settings-toggle,.retroarch-frontend .exit-fullscreen{display:none!important}
 .retroarch-frontend .fullscreen-notice{top:auto;bottom:4px;left:12px;right:12px;text-align:center}
 @media(max-height:360px){.immersive:not(.retroarch-frontend){--control-size:clamp(88px,34dvh,120px);gap:5px 10px}.immersive .shoulder-left,.immersive .shoulder-right{padding:5px 12px;min-height:30px}}
+
+#device-transfer{overflow-wrap:anywhere}
+.transfer-steps{padding-left:24px;line-height:1.8}
+.transfer-pairing{display:grid;gap:8px;margin:16px 0}
+.transfer-pairing textarea{box-sizing:border-box;width:100%;min-width:0;resize:vertical;background:#101c17;color:#d7e9df;border:1px solid #456b5c;border-radius:8px;padding:10px;font:12px/1.5 monospace}
+.transfer-pairing button{justify-self:start}
+.transfer-send{display:grid;gap:8px}
+.transfer-send select{width:100%;min-width:0;text-overflow:ellipsis}
+.transfer-incoming{margin-top:12px;padding:12px;border:1px solid #89cbb4;border-radius:8px}
+.transfer-note{font-size:12px;color:#a6c1b4}
+#transfer-progress{width:100%;margin-top:12px;accent-color:#89cbb4}
+#transfer-state,#transfer-result{font-size:13px}

@@ -2,13 +2,14 @@
 //! Stores terminate ordinary prefixes. Single-store self-loops may repeat
 //! in release builds; all other BEQ/BNE pairs stop after their delay instruction.
 use super::super::cpu::Registers;
-use super::super::memory::{RAM_SIZE, FRAMEBUFFER_MAP_SIZE, LCD_FRAMEBUFFER_ALIASES};
+use super::super::memory::{FRAMEBUFFER_MAP_SIZE, LCD_FRAMEBUFFER_ALIASES, RAM_SIZE};
 use std::mem::offset_of;
 
 pub(super) const EXIT_FALLTHROUGH: u64 = 1 << 32;
 const EXIT_BUDGET: u64 = 2 << 32;
 const EXIT_PC_MISMATCH: u64 = 3 << 32;
 pub(super) const EXIT_MEMORY: u64 = 4 << 32;
+pub(super) const EXIT_STALE_CODE: u64 = 5 << 32;
 
 /// ABI-v4 uses wasm32 addresses, independent of the native test host layout.
 #[repr(C)]
@@ -29,6 +30,7 @@ pub(super) struct Module {
     pub instructions: usize,
     pub branch: bool,
     pub repeated_loop: bool,
+    pub code_guard: bool,
 }
 
 // Release-only: the ABI tracks one last store; debug builds retain per-store logs.
@@ -43,7 +45,8 @@ fn self_loop_len(instructions: &[u32]) -> Option<usize> {
         if is_branch(word) {
             let delay = *instructions.get(index + 1)?;
             // BEQ/BNE with a backedge exactly to this prefix's entry.
-            if word as i16 as i32 != -(index as i32 + 1) || !supported(delay) || changes_hilo(delay) {
+            if word as i16 as i32 != -(index as i32 + 1) || !supported(delay) || changes_hilo(delay)
+            {
                 return None;
             }
             stores += usize::from(is_store(delay));
@@ -96,7 +99,12 @@ fn supported(word: u32) -> bool {
         0 => matches!(
             word & 63,
             0x00 | 0x02
-                | 0x0a | 0x0b | 0x10 | 0x12 | 0x18 | 0x19
+                | 0x0a
+                | 0x0b
+                | 0x10
+                | 0x12
+                | 0x18
+                | 0x19
                 | 0x03
                 | 0x04
                 | 0x06
@@ -373,8 +381,16 @@ fn memory_operation(
     }
 }
 
-fn overlap_guard(start: u32, index: usize, width: u32, begin: u32, end: u32,
-    cache: &RegisterCache, repeated_loop: bool, code: &mut Vec<u8>) {
+fn overlap_guard(
+    start: u32,
+    index: usize,
+    width: u32,
+    begin: u32,
+    end: u32,
+    cache: &RegisterCache,
+    repeated_loop: bool,
+    code: &mut Vec<u8>,
+) {
     code.extend_from_slice(&[0x20, 5]);
     i32_const(end, code);
     code.push(0x49);
@@ -394,7 +410,9 @@ fn framebuffer_code_spans(start: u32, count: usize) -> Vec<(u32, u32)> {
         let Some(offset) = LCD_FRAMEBUFFER_ALIASES.iter().find_map(|base| {
             let offset = address.wrapping_sub(*base);
             (offset < FRAMEBUFFER_MAP_SIZE as u32).then_some(offset)
-        }) else { continue };
+        }) else {
+            continue;
+        };
         if let Some(last) = spans.last_mut().filter(|last| last.1 == offset) {
             last.1 += 1;
         } else {
@@ -447,15 +465,49 @@ fn branch_operation(pc: u32, word: u32, cache: &mut RegisterCache, code: &mut Ve
 }
 
 pub(super) fn emit(start: u32, instructions: &[u32], shared: bool) -> Module {
+    emit_guarded(start, instructions, shared, None)
+}
+
+pub(super) fn emit_guarded(
+    start: u32,
+    instructions: &[u32],
+    shared: bool,
+    code_ram_offset: Option<u32>,
+) -> Module {
     let count = prefix_len(instructions);
     let repeated_loop = self_loop_len(instructions).is_some();
     let branch = count >= 2 && is_branch(instructions[count - 2]);
     let mut code = if instructions[..count].iter().any(|&word| changes_hilo(word)) {
         vec![2, 37, 0x7f, 1, 0x7e] // extra i64 product temporary only when used
-    } else { vec![1, 37, 0x7f] };
+    } else {
+        vec![1, 37, 0x7f]
+    };
     let mut cache = RegisterCache::default();
     code.extend_from_slice(&[0x20, 0, 0x28, 2, 0, 0x21, 2]);
     code.extend_from_slice(&[0x20, 0, 0x28, 2, 4, 0x21, 3]);
+    if let Some(offset) = code_ram_offset {
+        // Validate every source byte before budget/PC checks and before any
+        // guest/context write. The RAM pointer is supplied afresh on each call.
+        for (index, words) in instructions[..count].chunks(2).enumerate() {
+            code.extend_from_slice(&[0x20, 3]);
+            if words.len() == 2 {
+                code.extend_from_slice(&[0x29, 0]); // unaligned i64.load
+                unsigned(offset + index as u32 * 8, &mut code);
+                code.push(0x42);
+                signed(
+                    (u64::from(words[0]) | (u64::from(words[1]) << 32)) as i64,
+                    &mut code,
+                );
+                code.push(0x52); // i64.ne
+            } else {
+                code.extend_from_slice(&[0x28, 0]); // final four source bytes
+                unsigned(offset + index as u32 * 8, &mut code);
+                i32_const(words[0], &mut code);
+                code.push(0x47);
+            }
+            exit_if(EXIT_STALE_CODE, &mut code);
+        }
+    }
     code.extend_from_slice(&[0x20, 1]);
     i32_const(count as u32, &mut code);
     code.push(0x49); // i32.lt_u: budget < block length
@@ -532,7 +584,14 @@ pub(super) fn emit(start: u32, instructions: &[u32], shared: bool) -> Module {
             let operation = word & 63;
             if matches!(operation, 0x10 | 0x12) {
                 code.extend_from_slice(&[0x20, 2, 0x28, 2]);
-                unsigned(if operation == 0x10 { offset_of!(Registers, hi) } else { offset_of!(Registers, lo) } as u32, &mut code);
+                unsigned(
+                    if operation == 0x10 {
+                        offset_of!(Registers, hi)
+                    } else {
+                        offset_of!(Registers, lo)
+                    } as u32,
+                    &mut code,
+                );
                 write_register(destination, &mut cache, &mut code);
                 continue;
             }
@@ -540,7 +599,9 @@ pub(super) fn emit(start: u32, instructions: &[u32], shared: bool) -> Module {
                 load_register(rs, &mut cache, &mut code);
                 load_register(destination, &mut cache, &mut code);
                 load_register(rt, &mut cache, &mut code);
-                if operation == 0x0a { code.push(0x45); }
+                if operation == 0x0a {
+                    code.push(0x45);
+                }
                 code.push(0x1b); // select rs or the old destination before aliased write.
                 write_register(destination, &mut cache, &mut code);
                 continue;
@@ -650,5 +711,6 @@ pub(super) fn emit(start: u32, instructions: &[u32], shared: bool) -> Module {
         instructions: count,
         branch,
         repeated_loop,
+        code_guard: code_ram_offset.is_some(),
     }
 }

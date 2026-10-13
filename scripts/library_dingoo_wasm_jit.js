@@ -124,7 +124,8 @@ addToLibrary({
       var request = session && session.requests.get(token);
       if (!request) return;
       // Never unregister during execution of that function. Rust invokes this
-      // only before dispatch or when clearing a paused/reset runtime.
+      // only before dispatch, after a generated function has returned, or
+      // when clearing a paused/reset runtime.
       if (request.slot !== null) removeFunction(request.slot);
       request.bytes = null;
       session.bytes -= request.size;
