@@ -85,7 +85,7 @@ export class QuickConnect {
         }else if(saved&&['host','receiver'].includes(saved.role)&&/^[a-f0-9]{64}$/.test(saved.token)){this.remember(saved);}
       }catch{}
       if(this.identity)this.start();else this.say(t('本机可生成主机短码，也可输入另一台设备的短码。'));
-    }catch{this.say(t('连接需要局域网服务器；高级选项中可使用手动文本配对。'));}
+    }catch{this.say(t('连接码与记忆连接需要配对服务；可使用下方二维码或高级选项中的文本配对。'));}
     this.refresh();
   }
   refresh() {

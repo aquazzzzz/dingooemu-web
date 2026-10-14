@@ -2,6 +2,7 @@ import {t,setText,localize} from '../i18n';
 import {StreamPeer,parsePairing,PairingInputError,type Role} from '../streaming/peer';
 import type {InputUpdate} from '../input/state';
 import {QuickConnect} from '../streaming/quick-connect';
+import {StreamQr} from './stream-qr';
 interface Hooks {
   canHost():boolean;
   canStartHost():boolean;
@@ -38,6 +39,8 @@ export class RemotePlay {
   private allowed=false;
   private canvasSize?:[number,number];
   private quick:QuickConnect;
+  private qr:StreamQr;
+  private preparingQr=false;
   private nativeView=false;
   private pointers=new Map<number,{id:number;x:number;y:number}>();
   private nextTouchId=0;
@@ -58,8 +61,9 @@ export class RemotePlay {
   private controller:'web'|'retroarch'='retroarch';
   constructor(private panel:HTMLDetailsElement,private stage:HTMLElement,private canvas:HTMLCanvasElement,private hooks:Hooks) {
     panel.innerHTML=`<summary>局域网串流</summary>
-<p class="stream-intro">生成短码让另一台设备连接，或连接已记住的主机。</p>
+<p class="stream-intro">通过连接码、已记住的主机或双方互扫二维码连接。</p>
 <section id="stream-quick"></section>
+<section id="stream-qr"></section>
 <div id="stream-host-ready" class="stream-host-ready"><span>已获准的设备连接时，可自动启动本机 RetroArch；也可先运行游戏。</span><button id="retroarch" aria-keyshortcuts="F1">RetroArch 前端</button></div>
 <div class="stream-options"><label for="stream-fps">串流帧率上限</label><select id="stream-fps"><option value="60">60 FPS</option><option value="30">30 FPS</option></select><label><input id="stream-allow" type="checkbox" checked> 允许接收端操作</label></div>
 <details id="stream-advanced" class="stream-advanced"><summary>高级选项</summary>
@@ -168,6 +172,36 @@ export class RemotePlay {
       receive:async text=>{const reply=await this.run(generation=>this.join(generation,text,true));if(!reply)throw new Error(t('串流已停止。'));return reply;},
       answer:async text=>{await this.run(generation=>this.answer(generation,text));if(!this.peer)throw new Error(t('串流已停止。'));},close:()=>this.close(),
     });
+    this.qr=new StreamQr(this.get('stream-qr'),{
+      canCreate:()=>typeof RTCPeerConnection!=='undefined'&&this.enabled&&!this.working&&!this.peer&&!this.quick.pending&&this.hooks.canStartHost(),
+      canScan:()=>typeof RTCPeerConnection!=='undefined'&&this.enabled&&!this.working&&!this.quick.pending&&(!!this.peer?.waitingForAnswer||!this.peer&&this.hooks.canJoin()),
+      expected:()=>this.peer?.waitingForAnswer?{session:this.peer.session,type:'answer'}:undefined,
+      gesture:()=>this.prepareReceive(),cancel:()=>this.close(),
+      create:async()=>{
+        const text=await this.run(async generation=>{
+          if(!this.hooks.canHost()){
+            this.preparingQr=true;
+            try{await this.hooks.prepareHost();}finally{this.preparingQr=false;}
+          }
+          if(generation!==this.generation)return;
+          const text=await this.create(generation);
+          if(generation===this.generation)this.say(t('等待接收端扫描并返回回复二维码…'));
+          return text;
+        });
+        if(!text)throw new Error(t('二维码配对未完成，请查看串流状态后重试。'));return text;
+      },
+      accept:async text=>{
+        const pairing=parsePairing(text);
+        if(this.peer?.waitingForAnswer){
+          if(pairing.type!=='answer'||pairing.session!==this.peer.session)throw new PairingInputError(t('这是另一次配对的二维码，请扫描本次回复。'));
+          const peer=this.peer;await this.run(generation=>this.answer(generation,text));
+          if(this.peer!==peer)throw new Error(t('二维码配对未完成，请查看串流状态后重试。'));return;
+        }
+        if(this.peer||pairing.type!=='offer'||!this.hooks.canJoin())throw new PairingInputError(t('请先结束当前会话，再扫描主机二维码。'));
+        const reply=await this.run(generation=>this.join(generation,text,true));
+        if(!reply)throw new Error(t('二维码配对未完成，请查看串流状态后重试。'));return reply;
+      },
+    });
     window.addEventListener('blur',()=>this.sendInput(0,true));
     document.addEventListener('visibilitychange',()=>{
       if(document.hidden){this.sendInput(0,true);this.hooks.input({source:'remote',buttons:0,cancel:true});}
@@ -230,6 +264,7 @@ export class RemotePlay {
   }
   refresh(enabled:boolean) {
     this.enabled=enabled;
+    this.qr?.refresh();
     const active=!!this.peer,disabled=!enabled||this.working;
     const supported=typeof RTCPeerConnection!=='undefined';
     this.get<HTMLButtonElement>('stream-create').disabled=disabled||active||!supported||!this.hooks.canHost();
@@ -300,6 +335,7 @@ export class RemotePlay {
     const peer=new StreamPeer(role,session,{
       connected:()=>{
         if(this.peer!==peer)return;
+        this.qr?.reset();
         this.say(t('串流已连接'));
         this.get<HTMLTextAreaElement>('stream-input').value=this.get<HTMLTextAreaElement>('stream-output').value='';
         this.statsTimer=setInterval(()=>void this.stats(peer),1000);
@@ -447,6 +483,9 @@ export class RemotePlay {
     finally{this.replacingMedia=false;this.refresh(this.enabled);}
   }
   invalidate(){
+    // Starting the frontend replaces its canvas before a QR host has captured
+    // any media. That startup invalidation must not cancel its pending pairing.
+    if(this.preparingQr&&!this.peer&&!this.capture)return;
     if(this.replacingMedia){this.capture?.stop();this.capture=undefined;return;}
     if(this.peer||this.capture||this.working)this.close();
   }
@@ -458,6 +497,7 @@ export class RemotePlay {
     ++this.playAttempt;this.audioBlocked=this.playbackBlocked=false;
     this.lastVideoStats=undefined;
     this.peer=undefined;this.role=undefined;this.allowed=false;
+    this.qr?.reset();
     this.nativeView=false;this.pointers.clear();this.nextTouchId=0;this.stage.classList.remove('remote-frontend');this.hooks.touches([]);this.hooks.streamSize(0,0);
     this.capture?.stop();this.capture=undefined;
     this.hooks.input({source:'remote',buttons:0,cancel:true});this.hooks.clearInput();

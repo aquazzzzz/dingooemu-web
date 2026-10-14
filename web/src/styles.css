@@ -334,6 +334,20 @@ body.game-fullscreen .site-about{display:none}
 #stream-quick{margin:14px 0}
 #stream-quick [hidden]{display:none}
 .stream-intro{color:#aabbb5;font-size:13px}
+.stream-qr{margin:16px 0;padding:12px;border:1px solid #456b5c;border-radius:10px;font-size:13px}
+.stream-qr [hidden]{display:none}
+.stream-qr p{color:#aabbb5}
+#qr-display{text-align:center}
+#qr-display .file-actions{justify-content:center;flex-wrap:wrap}
+#qr-picture{margin:12px auto;max-width:360px}
+#qr-picture canvas{display:block;width:100%;height:auto;image-rendering:pixelated;background:#fff}
+#qr-count{display:block;margin:8px}
+.qr-scanner{box-sizing:border-box;width:min(560px,calc(100% - 24px));max-height:calc(100dvh - 24px);overflow:auto;padding:16px;color:#d7e9df;background:#14201e;border:1px solid #456b5c;border-radius:14px}
+.qr-scanner::backdrop{background:#000b}
+.qr-scanner .file-actions{flex-wrap:wrap}
+.qr-camera{background:#090d0b;min-height:120px;border-radius:8px;overflow:hidden}
+.qr-camera video{display:block;width:100%;max-height:45dvh;object-fit:contain}
+.qr-scanner p{font-size:13px;overflow-wrap:anywhere}
 .stream-connect-actions{display:flex;gap:10px;flex-wrap:wrap}
 .stream-connect-actions button{flex:0 0 auto;min-height:44px;white-space:nowrap}
 .stream-code-entry{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px;padding:12px;background:#101c17;border:1px solid #456b5c;border-radius:10px}
