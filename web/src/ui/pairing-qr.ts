@@ -1,25 +1,30 @@
 import {t,setText,localize} from '../i18n';
-import {QrAssembly,encodeQr} from '../streaming/qr-payload';
+import {QrAssembly,encodeQr,type QrKind} from '../pairing/qr-payload';
 
 interface Hooks {
   canCreate():boolean;canScan():boolean;expected():{session:string;type:'answer'}|undefined;
   create():Promise<string>;accept(text:string):Promise<string|undefined>;cancel():void;gesture():void;
 }
-export class StreamQr {
+export class PairingQr {
   private frames:string[]=[];private index=0;private timer?:ReturnType<typeof setInterval>;
-  private assembly=new QrAssembly();private generation=0;private scanGeneration=0;
+  private assembly:QrAssembly;private generation=0;private scanGeneration=0;
   private busy=false;private stream?:MediaStream;private scanTimer?:ReturnType<typeof setTimeout>;
+  private cameraTimer?:ReturnType<typeof setTimeout>;private picking=false;
   private facing='environment';private reading=false;private receiving=false;private paused=false;
   private canvas=document.createElement('canvas');private dialog=document.createElement('dialog');
   private video=document.createElement('video');
-  constructor(private root:HTMLElement,private hooks:Hooks){
+  constructor(private root:HTMLElement,private hooks:Hooks,private kind:QrKind='stream'){
+    this.assembly=new QrAssembly(kind);
     root.className='stream-qr';
     root.innerHTML=`<div class="file-actions"><button id="qr-create">生成二维码</button><button id="qr-scan">扫描二维码</button></div>
-<p id="qr-help">双方互扫二维码配对，无需复制连接文本。</p>
+${kind==='stream'?`<p id="qr-help">运行游戏或 RetroArch 的设备是主机；观看画面并操作游戏的设备是接收端。</p><ol class="qr-steps"><li>主机点击“生成二维码”，接收端点击“扫描二维码”读取。</li><li>接收端生成回复二维码后，主机点击“扫描回复”读取。</li><li>配对成功后自动开始串流，无需复制连接文本。</li></ol>`:`<p id="qr-help">任一设备都可发起连接；配对成功后，两台设备都能发送和接收文件。</p><ol class="qr-steps"><li>设备 A 点击“生成二维码”，设备 B 点击“扫描二维码”读取。</li><li>设备 B 生成回复二维码后，设备 A 点击“扫描回复”读取。</li><li>连接成功后选择文件发送，对方确认接收后保存，无需复制连接文本。</li></ol>`}
 <section id="qr-display" hidden><strong id="qr-role"></strong><div id="qr-picture"></div><output id="qr-count"></output><div class="file-actions"><button id="qr-pause">暂停轮播</button><button id="qr-next">下一张</button><button id="qr-save">保存图片</button><button id="qr-cancel">取消配对</button></div></section><p id="qr-state" role="status" aria-live="polite"></p>`;
     this.dialog.className='qr-scanner';this.dialog.setAttribute('aria-label',t('扫描二维码'));
-    this.dialog.innerHTML=`<h3>扫描二维码</h3><div class="qr-camera"></div><p id="qr-scan-state" role="status" aria-live="polite"></p><div class="file-actions"><button id="qr-camera-start">启用摄像头</button><button id="qr-camera-switch">切换摄像头</button><button id="qr-image">读取图片</button><button id="qr-scan-close">取消扫描</button></div><input id="qr-image-file" type="file" accept="image/*" multiple hidden>`;
+    this.dialog.innerHTML=`<h3>扫描二维码</h3><div class="qr-camera"></div><p id="qr-scan-state" role="status" aria-live="polite"></p><div class="file-actions"><button id="qr-camera-start">启用摄像头</button><button id="qr-camera-switch">切换摄像头</button><button id="qr-photo">拍照读取</button><button id="qr-image">读取图片</button><button id="qr-scan-close">取消扫描</button></div><input id="qr-image-file" type="file" accept="image/*" multiple hidden><input id="qr-photo-file" type="file" accept="image/*" capture="environment" hidden>`;
+    for(const element of [...root.querySelectorAll<HTMLElement>('[id]'),...this.dialog.querySelectorAll<HTMLElement>('[id]')])element.id=this.id(element.id);
+    this.dialog.dataset.qrKind=kind;
     document.body.append(this.dialog);localize(root);localize(this.dialog);
+    for(const id of ['qr-display','qr-picture','qr-count'])this.el(id).classList.add(id);
     this.video.playsInline=true;this.video.muted=true;this.video.autoplay=true;this.video.setAttribute('aria-label',t('摄像头预览'));
     this.dialog.querySelector('.qr-camera')!.append(this.video);
     this.el<HTMLButtonElement>('qr-create').onclick=()=>void this.generate();
@@ -31,14 +36,21 @@ export class StreamQr {
     this.el('qr-camera-start').onclick=()=>void this.camera();
     this.el('qr-camera-switch').onclick=()=>{this.facing=this.facing==='environment'?'user':'environment';void this.camera();};
     this.el('qr-scan-close').onclick=()=>this.closeScanner();
-    this.el('qr-image').onclick=()=>this.el<HTMLInputElement>('qr-image-file').click();
-    this.el<HTMLInputElement>('qr-image-file').onchange=()=>void this.images();
+    for(const [button,id] of [['qr-image','qr-image-file'],['qr-photo','qr-photo-file']]){
+      const input=this.el<HTMLInputElement>(id);
+      this.el(button).onclick=()=>{this.picking=true;this.stopCamera();input.click();};
+      input.onchange=()=>{this.picking=false;void this.images(input);};
+      input.addEventListener('cancel',()=>{this.picking=false;});
+    }
     this.dialog.oncancel=e=>{e.preventDefault();this.closeScanner();};
     this.dialog.onclose=()=>{if(!this.dialog.open)this.stopCamera();};
-    document.addEventListener('visibilitychange',()=>{if(document.hidden)this.closeScanner();});
+    document.addEventListener('visibilitychange',()=>{
+      if(document.hidden){if(this.picking)this.stopCamera();else this.closeScanner();}
+    });
     window.addEventListener('pagehide',()=>this.reset());this.refresh();
   }
-  private el<T extends HTMLElement=HTMLElement>(id:string){return (this.root.querySelector('#'+id)??this.dialog.querySelector('#'+id)) as T;}
+  private id(id:string){return this.kind==='stream'?id:id.replace(/^qr-/,'transfer-qr-');}
+  private el<T extends HTMLElement=HTMLElement>(id:string){return (this.root.querySelector('#'+this.id(id))??this.dialog.querySelector('#'+this.id(id))) as T;}
   private say(message:string,scan=false){setText(this.el(scan?'qr-scan-state':'qr-state'),message);}
   refresh(){
     this.el<HTMLButtonElement>('qr-create').disabled=this.busy||!this.hooks.canCreate();
@@ -47,7 +59,7 @@ export class StreamQr {
   }
   reset(){
     ++this.generation;this.busy=false;this.frames=[];this.index=0;clearInterval(this.timer);this.timer=undefined;
-    this.closeScanner();this.assembly=new QrAssembly();this.el('qr-display').hidden=true;this.el('qr-picture').replaceChildren();this.say('');this.refresh();
+    this.closeScanner();this.assembly=new QrAssembly(this.kind);this.el('qr-display').hidden=true;this.el('qr-picture').replaceChildren();this.say('');this.refresh();
   }
   private async generate(){
     if(this.busy||!this.hooks.canCreate())return;
@@ -57,13 +69,14 @@ export class StreamQr {
     finally{if(generation===this.generation){this.busy=false;this.refresh();}}
   }
   private async show(text:string,reply:boolean,generation=this.generation){
-    const frames=await encodeQr(text);if(generation!==this.generation)return;
+    const frames=await encodeQr(text,this.kind);if(generation!==this.generation)return;
     this.frames=frames;this.index=0;this.paused=false;clearInterval(this.timer);
-    this.el('qr-display').hidden=false;setText(this.el('qr-role'),t(reply?'回复二维码':'主机连接二维码'));
-    this.say(t(reply?'请让主机扫描此回复二维码，等待连接。':'请让接收端扫描，再扫描对方的回复二维码。'));
+    this.el('qr-display').hidden=false;setText(this.el('qr-role'),t(reply?'回复二维码':this.kind==='stream'?'主机连接二维码':'发起方连接二维码'));
+    this.say(t(this.kind==='stream'?(reply?'请让主机扫描此回复二维码，等待连接。':'请让接收端扫描，再扫描对方的回复二维码。'):(reply?'请让发起方扫描此回复二维码，等待连接。':'请让对方扫描，再扫描对方的回复二维码。')));
     this.el('qr-next').hidden=this.el('qr-pause').hidden=frames.length===1;
     setText(this.el('qr-pause'),t('暂停轮播'));await this.draw();
     if(generation!==this.generation)return;
+    this.el('qr-picture').scrollIntoView({block:'nearest',inline:'nearest'});
     if(frames.length>1)this.timer=setInterval(()=>{if(!this.paused&&!this.dialog.open&&!document.hidden){this.index=(this.index+1)%this.frames.length;void this.draw();}},600);
   }
   private async draw(){
@@ -80,22 +93,31 @@ export class StreamQr {
   }
   private save(){
     if(!this.frames.length)return;
-    const link=document.createElement('a');link.download=`dingoo-pairing-${this.canvas.dataset.frame}-${this.frames.length}.png`;link.href=this.canvas.toDataURL('image/png');link.click();
+    const link=document.createElement('a');link.download=`dingoo-${this.kind}-pairing-${this.canvas.dataset.frame}-${this.frames.length}.png`;link.href=this.canvas.toDataURL('image/png');link.click();
   }
   private open(){
     if(this.busy||!this.hooks.canScan())return;
-    this.hooks.gesture();this.assembly=new QrAssembly();this.dialog.showModal();this.say(t('请对准二维码；轮播时保持对准，直到全部读取。'),true);void this.camera();
+    this.hooks.gesture();this.assembly=new QrAssembly(this.kind);this.dialog.showModal();this.say(t('请对准二维码；轮播时保持对准，直到全部读取。'),true);void this.camera();
   }
   private stopCamera(){
     ++this.scanGeneration;clearTimeout(this.scanTimer);this.scanTimer=undefined;
+    clearTimeout(this.cameraTimer);this.cameraTimer=undefined;
     this.stream?.getTracks().forEach(track=>track.stop());this.stream=undefined;
     this.video.pause();this.video.srcObject=null;
   }
-  private closeScanner(){this.stopCamera();if(this.dialog.open)this.dialog.close();}
+  private closeScanner(){this.picking=false;this.stopCamera();if(this.dialog.open)this.dialog.close();}
   private async camera(){
     this.stopCamera();const generation=this.scanGeneration;
     if(!this.dialog.open)return;
     if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia){this.say(t('此地址无法使用摄像头，请使用 HTTPS、localhost 或读取二维码图片。'),true);return;}
+    this.say(t('正在启用摄像头，请允许访问…'),true);
+    // Permission or video.play can stall in installed iOS web apps. Timeout
+    // invalidates late results too, so granted tracks cannot leak afterwards.
+    this.cameraTimer=setTimeout(()=>{
+      if(generation!==this.scanGeneration||!this.dialog.open)return;
+      this.stopCamera();
+      this.say(t('摄像头未提供画面。可重试、切换摄像头、拍照读取或读取图片；主屏幕模式下也可尝试在 Safari 中打开。'),true);
+    },15000);
     try{
       const stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:this.facing},width:{ideal:1280},height:{ideal:720}}});
       if(generation!==this.scanGeneration||!this.dialog.open){stream.getTracks().forEach(track=>track.stop());return;}
@@ -113,6 +135,7 @@ export class StreamQr {
   private async tick(generation:number){
     if(generation!==this.scanGeneration||!this.dialog.open)return;
     try{if(!this.reading&&!this.receiving&&this.video.readyState>=2&&this.video.videoWidth){
+      clearTimeout(this.cameraTimer);this.cameraTimer=undefined;
       this.reading=true;const frame=await this.decode(this.video,this.video.videoWidth,this.video.videoHeight);
       if(generation===this.scanGeneration&&frame)await this.read(frame,generation);
     }}catch(error){if(generation===this.scanGeneration)this.say(String(error),true);}
@@ -125,7 +148,7 @@ export class StreamQr {
     if(generation!==this.scanGeneration||!this.dialog.open){
       // Camera switching can cancel an in-flight decompression. Allow the new
       // scanner to collect the same rotating code again rather than consuming it.
-      if(result.text&&assembly===this.assembly)this.assembly=new QrAssembly();
+      if(result.text&&assembly===this.assembly)this.assembly=new QrAssembly(this.kind);
       return;
     }
     this.say(t('已读取 {0} / {1} 张',result.read,result.total),true);
@@ -134,12 +157,12 @@ export class StreamQr {
     try{
       const reply=await this.hooks.accept(result.text);
       if(operation!==this.generation)return;
-      if(reply)await this.show(reply,true,operation);else this.say(t('正在连接串流…'));
+      if(reply)await this.show(reply,true,operation);else this.say(t(this.kind==='stream'?'正在连接串流…':'正在连接设备互传…'));
     }catch(error){if(operation===this.generation){this.assembly.clear();this.say(String(error));}}
     finally{this.receiving=false;if(operation===this.generation){this.busy=false;this.refresh();}}
   }
-  private async images(){
-    const input=this.el<HTMLInputElement>('qr-image-file'),files=Array.from(input.files??[]);input.value='';
+  private async images(input:HTMLInputElement){
+    const files=Array.from(input.files??[]);input.value='';
     // Stop camera recognition while images are being read; retain collected slices.
     this.stopCamera();const generation=this.scanGeneration;
     for(const file of files){

@@ -1,7 +1,9 @@
-import {parsePairing,type Pairing} from './peer';
+import {parsePairing as parseStreamPairing,type Pairing} from '../streaming/peer';
+import {parsePairing as parseTransferPairing} from '../transfer/peer';
 import {t} from '../i18n';
 
-const PREFIX='DINGOO-STREAM-QR:1:',SLICE=400,MAX_PACK=128*1024,MAX_RAW=64000;
+export type QrKind='stream'|'transfer';
+const SLICE=400,MAX_PACK=128*1024,MAX_RAW=64000;
 const ALPHABET='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
 function base45(bytes:Uint8Array){
   let text='';for(let i=0;i<bytes.length;i+=2){let value=bytes[i];const pair=i+1<bytes.length;if(pair)value=value*256+bytes[i+1];text+=ALPHABET[value%45]+ALPHABET[Math.floor(value/45)%45];if(pair)text+=ALPHABET[Math.floor(value/2025)];}return text;
@@ -11,6 +13,12 @@ function unbase45(text:string){
   for(let i=0;i<text.length;i+=3){const pair=i+2<text.length,value=ALPHABET.indexOf(text[i])+45*ALPHABET.indexOf(text[i+1])+(pair?2025*ALPHABET.indexOf(text[i+2]):0);if(value>(pair?65535:255))throw bad();if(pair)bytes.push(value>>>8);bytes.push(value&255);}return Uint8Array.from(bytes);
 }
 const bad=()=>new Error(t('二维码无效或已损坏，请重新扫描。'));
+export function parseQrPairing(text:string,kind:QrKind):Pairing {
+  if(kind==='stream')return parseStreamPairing(text);
+  const description=parseTransferPairing(text),value=JSON.parse(text);
+  if(typeof value.session!=='string'||!/^[a-f0-9]{32}$/.test(value.session))throw bad();
+  return {type:description.type as 'offer'|'answer',sdp:description.sdp!,session:value.session};
+}
 function checksum(bytes:Uint8Array){
   let crc=0xffffffff;
   for(const byte of bytes){crc^=byte;for(let i=0;i<8;i++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}
@@ -22,8 +30,8 @@ async function collect(stream:ReadableStream<Uint8Array>,limit:number){
   finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
   const bytes=new Uint8Array(size);let offset=0;for(const part of parts){bytes.set(part,offset);offset+=part.length;}return bytes;
 }
-export async function encodeQr(text:string):Promise<string[]>{
-  const pairing=parsePairing(text),raw=new TextEncoder().encode(text);
+export async function encodeQr(text:string,kind:QrKind='stream'):Promise<string[]>{
+  const pairing=parseQrPairing(text,kind),raw=new TextEncoder().encode(text);
   if(raw.length>MAX_PACK)throw bad();
   let bytes=raw,encoding='r';
   if(typeof CompressionStream!=='undefined'){
@@ -32,23 +40,25 @@ export async function encodeQr(text:string):Promise<string[]>{
   }
   const data=base45(bytes),count=Math.ceil(data.length/SLICE);
   if(count>128)throw bad();
-  const header=`${PREFIX}${pairing.session.toUpperCase()}:${pairing.type.toUpperCase()}:${encoding.toUpperCase()}:${checksum(bytes).toUpperCase()}:${count}:`;
+  const header=`DINGOO-${kind.toUpperCase()}-QR:1:${pairing.session.toUpperCase()}:${pairing.type.toUpperCase()}:${encoding.toUpperCase()}:${checksum(bytes).toUpperCase()}:${count}:`;
   return Array.from({length:count},(_,index)=>`${header}${index}:${data.slice(index*SLICE,(index+1)*SLICE)}`);
 }
 export class QrAssembly {
   private key='';private parts=new Map<number,string>();private size=0;private complete=false;
+  constructor(private kind:QrKind='stream'){}
   clear(){this.key='';this.parts.clear();this.size=0;this.complete=false;}
   async add(frame:string,expected?:{session:string;type:'answer'}):Promise<{read:number;total:number;text?:string;pairing?:Pairing}>{
     if(frame.length>1100)throw bad();
-    const match=frame.match(/^DINGOO-STREAM-QR:1:([A-F0-9]{32}):(OFFER|ANSWER):(R|Z):([A-F0-9]{8}):(\d{1,3}):(\d{1,3}):([0-9A-Z $%*+./:\-]+)$/);
+    const match=frame.match(/^DINGOO-(STREAM|TRANSFER)-QR:1:([A-F0-9]{32}):(OFFER|ANSWER):(R|Z):([A-F0-9]{8}):(\d{1,3}):(\d{1,3}):([0-9A-Z $%*+./:\-]+)$/);
     if(!match)throw bad();
-    const [,sessionText,typeText,encodingText,hashText,countText,indexText,data]=match,count=Number(countText),index=Number(indexText);
+    const [,kindText,sessionText,typeText,encodingText,hashText,countText,indexText,data]=match,count=Number(countText),index=Number(indexText);
+    if(kindText.toLowerCase()!==this.kind)throw new Error(t(kindText==='STREAM'?'这是串流二维码，请在串流面板中使用。':'这是设备互传二维码，请在设备互传中使用。'));
     const session=sessionText.toLowerCase(),type=typeText.toLowerCase(),encoding=encodingText.toLowerCase(),hash=hashText.toLowerCase();
     if(count<1||count>128||index>=count||data.length>SLICE||index<count-1&&data.length!==SLICE)throw bad();
     if(expected){
-      if(type!=='answer')throw new Error(t('这是主机连接二维码，请扫描接收端的回复二维码。'));
+      if(type!=='answer')throw new Error(t(this.kind==='stream'?'这是主机连接二维码，请扫描接收端的回复二维码。':'这是发起方连接二维码，请扫描对方的回复二维码。'));
       if(session!==expected.session)throw new Error(t('这是另一次配对的二维码，请扫描本次回复。'));
-    }else if(type!=='offer')throw new Error(t('这是回复二维码，请先扫描主机的连接二维码。'));
+    }else if(type!=='offer')throw new Error(t(this.kind==='stream'?'这是回复二维码，请先扫描主机的连接二维码。':'这是回复二维码，请先扫描发起方的连接二维码。'));
     const key=[session,type,encoding,hash,count].join(':');
     if(this.key&&this.key!==key)throw new Error(t('二维码来自不同的配对，请取消扫描后重试。'));
     this.key=key;
@@ -67,7 +77,7 @@ export class QrAssembly {
     }
     if(bytes.length>MAX_RAW)throw bad();
     let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{throw bad();}
-    const pairing=parsePairing(text);
+    const pairing=parseQrPairing(text,this.kind);
     if(pairing.session!==session||pairing.type!==type)throw bad();
     this.complete=true;return {...progress,text,pairing};
   }

@@ -121,6 +121,7 @@ export class EmulatorClient {
   private loadGeneration=0;
   private workerReason='';
   private runtimeCanvas?:HTMLCanvasElement;
+  private preventFocusScroll=false;
   private canvasObserver?:ResizeObserver;
   private styleObserver?:MutationObserver;
   private telemetry=new Float64Array(40);
@@ -170,6 +171,8 @@ export class EmulatorClient {
     // reused after a quit or a failed Worker initialization.
     this.canvas.id='canvas-layout';this.canvas.style.opacity='0';
     const view=document.createElement('canvas');view.id='canvas';view.className='runtime-canvas';view.width=320;view.height=240;view.tabIndex=0;view.setAttribute('aria-label',this.canvas.getAttribute('aria-label')||'');
+    const focus=view.focus.bind(view);
+    view.focus=options=>focus({...options,preventScroll:this.preventFocusScroll||options?.preventScroll});
     this.canvas.after(view);this.runtimeCanvas=view;
     const resize=()=>{view.style.width=this.canvas.clientWidth+'px';view.style.height=this.canvas.clientHeight+'px';view.style.left=this.canvas.offsetLeft+'px';view.style.top=this.canvas.offsetTop+'px';view.style.imageRendering=this.canvas.style.imageRendering;};
     this.canvasObserver=new ResizeObserver(resize);this.canvasObserver.observe(this.canvas);this.canvasObserver.observe(this.canvas.parentElement!);
@@ -297,7 +300,10 @@ export class EmulatorClient {
     await this.call('_cmd_frontend_suspend',23,Number(value));this.suspended=value;
   }
   frontendNotice(message:string){this.module?.EmscriptenSendCommand('SHOW_MSG '+message.replace(/[\r\n]/g,' '));}
-  async loadFrontend(){await this.load(new Uint8Array(),'');}
+  async loadFrontend(preventFocusScroll=false){
+    this.preventFocusScroll=preventFocusScroll;
+    try{await this.load(new Uint8Array(),'');}finally{this.preventFocusScroll=false;}
+  }
   private stateBusy=false;
   onFileStatus:(message:string,failed:boolean)=>void=()=>{};
   onInfo:(message:string)=>void=()=>{};

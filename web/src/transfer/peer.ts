@@ -42,6 +42,7 @@ export class TransferPeer {
   }
   get connected(){return !this.stopped&&this.channel?.readyState==='open';}
   get closed(){return this.stopped;}
+  get waitingForAnswer(){return !this.stopped&&this.pc.signalingState==='have-local-offer';}
   get receiving(){return !!this.incoming?.accepted;}
   get busy(){return !!(this.incoming||this.outgoing);}
   private arm(){clearTimeout(this.timer);this.timer=setTimeout(()=>this.close(t('连接或传输超时，请保持双方页面在前台并重新配对。')),120000);}

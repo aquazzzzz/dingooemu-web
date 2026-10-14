@@ -4,6 +4,8 @@ import {SnapshotStore,exportSnapshot,importSnapshot,validateSnapshot} from '../s
 import {packGame,unpackGame} from '../transfer/package';
 import {TransferPeer,parsePairing,type TransferOffer} from '../transfer/peer';
 import {sizeLabel} from './file-manager';
+import {PairingQr} from './pairing-qr';
+import {parseQrPairing} from '../pairing/qr-payload';
 
 export class DeviceTransfer {
   private peer?:TransferPeer;
@@ -13,9 +15,13 @@ export class DeviceTransfer {
   private offer?:TransferOffer;
   private serial=0;
   private lastProgress=0;
+  private qr:PairingQr;
+  private qrSession?:string;
   constructor(private panel:HTMLDetailsElement,private games:SaveStore,private snapshots:SnapshotStore,private changed:()=>Promise<void>){
     panel.innerHTML=`<summary>设备互传</summary>
 <p>两台设备连接同一局域网，保持页面在前台。文件直接传到对方，不上传服务器。</p>
+<section id="transfer-qr"></section>
+<p>也可使用下方文本配对。</p>
 <ol class="transfer-steps"><li>设备 A 点击“创建连接”，把本机连接文本完整复制给设备 B。</li><li>设备 B 粘贴文本，点击“加入连接”，再把生成的回复文本发回 A。</li><li>设备 A 粘贴回复，点击“完成配对”。连接后双方均可发送文件。</li></ol>
 <p class="transfer-note">连接文本较长，包含本次配对信息，请仅交给接收方。无需账号、短码服务或云存储。</p>
 <div class="file-actions"><button id="transfer-create">创建连接</button><button id="transfer-join">加入连接</button><button id="transfer-answer" disabled>完成配对</button><button id="transfer-close" disabled>断开／取消传输</button></div>
@@ -28,6 +34,42 @@ export class DeviceTransfer {
 <progress id="transfer-progress" max="1" value="0" aria-label="传输进度" hidden></progress><p id="transfer-result" role="status" aria-live="polite"></p>
 <p class="transfer-note">连接失败时请检查访客 Wi-Fi、设备隔离或浏览器局域网权限。传输中请勿锁屏；中断后需重新发送。</p>`;
     localize(panel);
+    this.qr=new PairingQr(this.get('transfer-qr'),{
+      canCreate:()=>this.enabled&&!this.working&&(!this.peer||this.peer.closed)&&typeof RTCPeerConnection!=='undefined',
+      canScan:()=>this.enabled&&!this.working&&typeof RTCPeerConnection!=='undefined'&&(!this.peer||this.peer.closed||!!this.qrSession&&this.peer.waitingForAnswer),
+      expected:()=>this.qrSession&&this.peer?.waitingForAnswer?{session:this.qrSession,type:'answer'}:undefined,
+      gesture:()=>{},cancel:()=>this.close(),
+      create:async()=>{
+        const text=await this.run(async()=>{
+          this.initiating=true;const peer=this.start();
+          const session=Array.from(crypto.getRandomValues(new Uint8Array(16)),v=>v.toString(16).padStart(2,'0')).join('');this.qrSession=session;
+          this.say(t('正在生成二维码…'));const text=await peer.create();
+          if(this.peer!==peer||peer.closed)throw new Error(t('连接已关闭。'));
+          this.say(t('等待对方扫描并返回回复二维码…'));
+          return JSON.stringify({...JSON.parse(text),session});
+        });
+        if(!text)throw new Error(t('设备互传二维码配对未完成，请查看互传状态后重试。'));return text;
+      },
+      accept:async text=>{
+        const pairing=parseQrPairing(text,'transfer'),description=parsePairing(text);
+        const peer=this.peer;
+        if(peer?.waitingForAnswer&&this.qrSession){
+          if(pairing.type!=='answer'||pairing.session!==this.qrSession)throw new Error(t('这是另一次配对的二维码，请扫描本次回复。'));
+          let applied=false;
+          await this.run(async()=>{await peer.answer(description);applied=true;this.say(t('正在连接，请保持双方页面在前台…'));});
+          if(!applied)throw new Error(t('设备互传二维码配对未完成，请查看互传状态后重试。'));return;
+        }
+        if(peer&&!peer.closed||pairing.type!=='offer')throw new Error(t('请先结束当前会话，再扫描发起方二维码。'));
+        const reply=await this.run(async()=>{
+          this.initiating=false;const receiver=this.start();this.qrSession=pairing.session;
+          const reply=await receiver.join(description);
+          if(this.peer!==receiver||receiver.closed)throw new Error(t('连接已关闭。'));
+          this.say(t('请让发起方扫描此回复二维码，等待连接。'));
+          return JSON.stringify({...JSON.parse(reply),session:pairing.session});
+        });
+        if(!reply)throw new Error(t('设备互传二维码配对未完成，请查看互传状态后重试。'));return reply;
+      },
+    },'transfer');
     this.get('transfer-create').onclick=()=>void this.run(async()=>{
       this.initiating=true;const peer=this.start();this.say(t('正在生成连接文本…'));
       this.get<HTMLTextAreaElement>('transfer-output').value=await peer.create();this.say(t('把本机文本发给对方，等待回复。'));
@@ -79,7 +121,13 @@ export class DeviceTransfer {
   private start(){
     this.peer?.close();this.get<HTMLTextAreaElement>('transfer-output').value='';this.get<HTMLProgressElement>('transfer-progress').hidden=true;this.result('');
     const peer=new TransferPeer({
-      state:(message,connected)=>{this.say(message);if(connected){this.get<HTMLTextAreaElement>('transfer-input').value='';this.get<HTMLTextAreaElement>('transfer-output').value='';}this.controls();},
+      state:(message,connected)=>{
+        if(this.peer!==peer)return;
+        this.say(message);
+        if(connected){this.get<HTMLTextAreaElement>('transfer-input').value='';this.get<HTMLTextAreaElement>('transfer-output').value='';}
+        if(connected||peer.closed){this.qrSession=undefined;this.qr?.reset();}
+        this.controls();
+      },
       progress:(bytes,total)=>this.progress(bytes,total),
       offer:offer=>{
         if(!this.enabled){peer.reject();return;}
@@ -105,9 +153,10 @@ export class DeviceTransfer {
     });
     this.peer=peer;return peer;
   }
-  close(){this.peer?.close();this.peer=undefined;this.get<HTMLTextAreaElement>('transfer-output').value='';this.get<HTMLTextAreaElement>('transfer-input').value='';this.controls();}
+  close(){this.peer?.close();this.peer=undefined;this.qrSession=undefined;this.qr.reset();this.get<HTMLTextAreaElement>('transfer-output').value='';this.get<HTMLTextAreaElement>('transfer-input').value='';this.controls();}
   setEnabled(value:boolean){this.enabled=value;this.controls();}
   private controls(){
+    this.qr?.refresh();
     const peer=this.peer,active=!!peer&&!peer.closed,disabled=this.working||!this.enabled;
     this.get<HTMLButtonElement>('transfer-create').disabled=this.get<HTMLButtonElement>('transfer-join').disabled=disabled||active||typeof RTCPeerConnection==='undefined';
     this.get<HTMLButtonElement>('transfer-answer').disabled=disabled||!active||!this.initiating||!!peer?.connected;
@@ -128,9 +177,9 @@ export class DeviceTransfer {
     if([...select.options].some(o=>o.value===selected))select.value=selected;
     this.controls();
   }
-  private async run(job:()=>Promise<void>){
+  private async run<T>(job:()=>Promise<T>){
     if(this.working||!this.enabled)return;this.working=true;this.controls();
-    try {await job();}catch(error){this.result(String(error));}
+    try {return await job();}catch(error){this.result(String(error));}
     finally {this.working=false;this.controls();}
   }
 }

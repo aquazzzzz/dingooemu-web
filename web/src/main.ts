@@ -42,7 +42,7 @@ app.innerHTML=`<main><header><div class="header-main"><div class="header-brand">
 <div class="position-setting"><button id="edit-control-layout" aria-pressed="false">调整按键位置</button><button id="reset-control-layout">恢复默认位置</button><small id="layout-help">调整时拖动十字键、各按键或全屏设置按钮，完成后保存。</small></div></section>
 <button id="exit-fullscreen" class="exit-fullscreen" hidden>退出全屏</button><span id="fullscreen-notice" class="fullscreen-notice" role="status"></span></div>
 <p id="status" role="status"></p>
-<div class="toolbar"><label class="file" title="支持 .app / .cc / .c2s / .c3s 和 ZIP 游戏包">导入游戏<input id="file" type="file"></label><!-- Folder import temporarily disabled. <label class="import-button">导入文件夹<input id="game-folder" type="file" webkitdirectory multiple></label> --><button id="run" disabled>暂停</button><button id="stop" title="结束当前运行，保留游戏文件和已保存存档。" disabled>中止</button><button id="reset" disabled>重置</button><button id="quick-save" disabled>即时存档</button><button id="quick-load" disabled>即时读档</button><button id="toolbar-connect" disabled>连接已记住的主机</button></div>
+<div class="toolbar"><label class="file" title="支持 .app / .cc / .c2s / .c3s 和 ZIP 游戏包">导入游戏<input id="file" type="file"></label><!-- Folder import temporarily disabled. <label class="import-button">导入文件夹<input id="game-folder" type="file" webkitdirectory multiple></label> --><button id="run" disabled>暂停</button><button id="stop" title="结束当前运行，保留游戏文件和已保存存档。" disabled>中止</button><button id="reset" disabled>重置</button><button id="quick-save" disabled>即时存档</button><button id="quick-load" disabled>即时读档</button></div>
 <div class="options"><span id="game-name"></span></div>
 <div id="import-choice" class="import-choice" hidden><label for="import-game">选择包内的游戏</label><select id="import-game"></select><button id="import-open">载入</button><button id="import-cancel">取消</button></div>
 <p id="snapshot-status" role="status" aria-live="polite"></p><p id="file-status" role="status" aria-live="polite"></p><details id="resources-details" hidden><summary>本次导入的资源</summary><p>资源随游戏保存在本机；添加或移除资源会重新载入游戏。</p><label class="import-button">添加资源<input id="resource-files" type="file" multiple></label><ul id="resource-list" class="managed-files"></ul></details>
@@ -237,7 +237,6 @@ remotePlay=new RemotePlay(get<HTMLDetailsElement>('remote-play'),get('game-stage
     await openFrontendView(false);
   },
 });
-remotePlay.bindRememberedHostButton(get<HTMLButtonElement>('toolbar-connect'));
 client.nativeInputBlocked=()=>!!remotePlay?.remoteControls;
 client.onMediaInvalidated=()=>remotePlay?.invalidate();
 async function leaveFrontendView() {
@@ -254,7 +253,7 @@ async function openFrontendView(useFullscreen=true) {
   await action(async()=>{
     try {
       await presentation;clearInput();await measurement?.cancel(t('进入 RetroArch 菜单，测量已结束'));
-      pwa.gameStarted();if(!client.ready)await client.loadFrontend();
+      pwa.gameStarted();if(!client.ready)await client.loadFrontend(!useFullscreen);
       await client.enterFrontend();setText(get('frontend-status'),'');
     } catch(error){await leaveFrontendView();throw error;}
   });

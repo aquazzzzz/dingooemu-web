@@ -2,7 +2,7 @@ import {t,setText,localize} from '../i18n';
 import {StreamPeer,parsePairing,PairingInputError,type Role} from '../streaming/peer';
 import type {InputUpdate} from '../input/state';
 import {QuickConnect} from '../streaming/quick-connect';
-import {StreamQr} from './stream-qr';
+import {PairingQr} from './pairing-qr';
 interface Hooks {
   canHost():boolean;
   canStartHost():boolean;
@@ -39,7 +39,7 @@ export class RemotePlay {
   private allowed=false;
   private canvasSize?:[number,number];
   private quick:QuickConnect;
-  private qr:StreamQr;
+  private qr:PairingQr;
   private preparingQr=false;
   private nativeView=false;
   private pointers=new Map<number,{id:number;x:number;y:number}>();
@@ -61,9 +61,9 @@ export class RemotePlay {
   private controller:'web'|'retroarch'='retroarch';
   constructor(private panel:HTMLDetailsElement,private stage:HTMLElement,private canvas:HTMLCanvasElement,private hooks:Hooks) {
     panel.innerHTML=`<summary>局域网串流</summary>
-<p class="stream-intro">通过连接码、已记住的主机或双方互扫二维码连接。</p>
-<section id="stream-quick"></section>
+<p class="stream-intro">通过双方互扫二维码、连接码或已记住的主机连接。</p>
 <section id="stream-qr"></section>
+<section id="stream-quick"></section>
 <div id="stream-host-ready" class="stream-host-ready"><span>已获准的设备连接时，可自动启动本机 RetroArch；也可先运行游戏。</span><button id="retroarch" aria-keyshortcuts="F1">RetroArch 前端</button></div>
 <div class="stream-options"><label for="stream-fps">串流帧率上限</label><select id="stream-fps"><option value="60">60 FPS</option><option value="30">30 FPS</option></select><label><input id="stream-allow" type="checkbox" checked> 允许接收端操作</label></div>
 <details id="stream-advanced" class="stream-advanced"><summary>高级选项</summary>
@@ -172,13 +172,14 @@ export class RemotePlay {
       receive:async text=>{const reply=await this.run(generation=>this.join(generation,text,true));if(!reply)throw new Error(t('串流已停止。'));return reply;},
       answer:async text=>{await this.run(generation=>this.answer(generation,text));if(!this.peer)throw new Error(t('串流已停止。'));},close:()=>this.close(),
     });
-    this.qr=new StreamQr(this.get('stream-qr'),{
+    this.qr=new PairingQr(this.get('stream-qr'),{
       canCreate:()=>typeof RTCPeerConnection!=='undefined'&&this.enabled&&!this.working&&!this.peer&&!this.quick.pending&&this.hooks.canStartHost(),
       canScan:()=>typeof RTCPeerConnection!=='undefined'&&this.enabled&&!this.working&&!this.quick.pending&&(!!this.peer?.waitingForAnswer||!this.peer&&this.hooks.canJoin()),
       expected:()=>this.peer?.waitingForAnswer?{session:this.peer.session,type:'answer'}:undefined,
       gesture:()=>this.prepareReceive(),cancel:()=>this.close(),
       create:async()=>{
         const text=await this.run(async generation=>{
+          this.controller='web';
           if(!this.hooks.canHost()){
             this.preparingQr=true;
             try{await this.hooks.prepareHost();}finally{this.preparingQr=false;}
@@ -252,7 +253,6 @@ export class RemotePlay {
     }catch(error){this.say(String(error));}
   }
   get hostPaused(){return !!this.peer?.hostPaused;}
-  bindRememberedHostButton(button:HTMLButtonElement){this.quick.bindConnectButton(button,()=>{this.panel.open=true;});}
   togglePlayback(){this.peer?.requestPlayback(this.hostPaused?'resume':'pause');}
   sendInput(mask:number,cancel=false){if(cancel)this.pointers.clear();this.peer?.sendInput(mask,cancel);}
   setFrontend(value:boolean){this.peer?.setFrontend(value);}
@@ -497,6 +497,10 @@ export class RemotePlay {
     ++this.playAttempt;this.audioBlocked=this.playbackBlocked=false;
     this.lastVideoStats=undefined;
     this.peer=undefined;this.role=undefined;this.allowed=false;
+    // QR sessions choose the web controller without replacing the user's
+    // remembered default for other pairing methods.
+    this.controller='retroarch';
+    try{if(localStorage.getItem('dingoo-stream:controller')==='web')this.controller='web';}catch{}
     this.qr?.reset();
     this.nativeView=false;this.pointers.clear();this.nextTouchId=0;this.stage.classList.remove('remote-frontend');this.hooks.touches([]);this.hooks.streamSize(0,0);
     this.capture?.stop();this.capture=undefined;
