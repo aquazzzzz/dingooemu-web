@@ -1,4 +1,6 @@
 import {t,setText} from '../i18n';
+type NativeDocument=Document&{webkitFullscreenEnabled?:boolean;webkitFullscreenElement?:Element|null;webkitExitFullscreen?:()=>void|Promise<void>};
+type NativeElement=HTMLElement&{webkitRequestFullscreen?:()=>void|Promise<void>};
 // Fullscreen changes presentation only; RetroArch remains the simulation clock.
 export class GameFullscreen {
   private mode: 'none' | 'native' | 'page' = 'none';
@@ -6,14 +8,17 @@ export class GameFullscreen {
   private pending = false;
   private integerScale = false;
   private frontend = false;
+  private streamSize?:[number,number];
   private scrollPosition:[number,number]=[0,0];
   constructor(private root: HTMLElement, private screen: HTMLCanvasElement,
     private exitButton: HTMLButtonElement, private notice: HTMLElement,
     private clearInput: () => void, private onChange: () => void = () => {}) {
-    document.addEventListener('fullscreenchange', () => {
-      if (document.fullscreenElement === this.root) this.activate('native');
-      else if (this.mode === 'native') this.deactivate();
-    });
+    const changed=()=>{
+      if(this.nativeElement===this.root){if(this.mode!=='native')this.activate('native');}
+      else if(this.mode==='native')this.deactivate();
+    };
+    document.addEventListener('fullscreenchange',changed);
+    document.addEventListener('webkitfullscreenchange',changed);
     document.addEventListener('keydown', event => {
       if (event.key === 'Escape' && this.mode === 'page') {
         event.preventDefault(); void this.exit();
@@ -33,19 +38,44 @@ export class GameFullscreen {
     window.visualViewport?.addEventListener('scroll',resize);
   }
   get active() {return this.mode!=='none';}
+  private get nativeElement(){return document.fullscreenElement??(document as NativeDocument).webkitFullscreenElement;}
+  // Prefixed WebKit methods may return void and complete via events. Waiting
+  // for the actual state also keeps frontend startup from racing fullscreen.
+  private nativeChange(action:()=>void|Promise<void>,entering:boolean) {
+    return new Promise<void>((resolve,reject)=>{
+      const changes=['fullscreenchange','webkitfullscreenchange'],errors=['fullscreenerror','webkitfullscreenerror'];
+      let done=false;
+      const finish=(error?:unknown)=>{
+        if(done)return;done=true;clearTimeout(timer);
+        changes.forEach(type=>document.removeEventListener(type,check));errors.forEach(type=>document.removeEventListener(type,failed));
+        if(error)reject(error);else resolve();
+      };
+      const check=()=>{if((this.nativeElement===this.root)===entering)finish();};
+      const failed=()=>finish(new Error('Native fullscreen failed'));
+      const timer=setTimeout(failed,5000);
+      changes.forEach(type=>document.addEventListener(type,check));errors.forEach(type=>document.addEventListener(type,failed));
+      // Invoke directly in the click handler, before yielding user activation.
+      try{Promise.resolve(action()).then(check,finish);check();}catch(error){finish(error);}
+    });
+  }
   setFrontend(value:boolean) {this.frontend=value;this.root.classList.toggle('retroarch-frontend',value);this.fit();}
+  setStreamSize(width:number,height:number){this.streamSize=width&&height?[width,height]:undefined;this.fit();}
   setIntegerScale(value:boolean) {this.integerScale=value;this.fit();}
   async enter() {
     if (this.pending || this.mode !== 'none') return;
     this.pending = true; this.clearInput();
     try {
-      if (!document.fullscreenEnabled || !this.root.requestFullscreen) {
+      const doc=document as NativeDocument,root=this.root as NativeElement;
+      const request=typeof root.requestFullscreen==='function'&&doc.fullscreenEnabled!==false
+        ?()=>root.requestFullscreen({navigationUI:'hide'})
+        :typeof root.webkitRequestFullscreen==='function'&&doc.webkitFullscreenEnabled!==false
+          ?()=>root.webkitRequestFullscreen!():undefined;
+      if (!request) {
         this.activate('page');
       } else {
         try {
-          // Called directly from the user's click, before any asynchronous work.
-          await this.root.requestFullscreen({navigationUI: 'hide'});
-          if (document.fullscreenElement === this.root) this.activate('native');
+          await this.nativeChange(request,true);
+          if(this.nativeElement===this.root&&!this.active)this.activate('native');
         } catch {
           this.activate('page');
         }
@@ -56,7 +86,11 @@ export class GameFullscreen {
     if (this.pending || this.mode === 'none') return;
     this.pending = true;
     try {
-      if (document.fullscreenElement === this.root) await document.exitFullscreen();
+      if(this.nativeElement===this.root){
+        const doc=document as NativeDocument;
+        const exit=document.fullscreenElement===this.root?()=>doc.exitFullscreen():()=>doc.webkitExitFullscreen!();
+        await this.nativeChange(exit,false);
+      }
       else this.deactivate();
     } catch {
       setText(this.notice,t("退出全屏失败，请使用浏览器的退出全屏操作。"));
@@ -92,6 +126,9 @@ export class GameFullscreen {
   }
   private fit() {
     if(this.frontend){
+      if(this.mode==='none'){
+        this.screen.style.removeProperty('width');this.screen.style.removeProperty('height');return;
+      }
       const area=this.screen.parentElement!;
       this.screen.style.width=`${area.clientWidth}px`;this.screen.style.height=`${area.clientHeight}px`;return;
     }
@@ -100,7 +137,7 @@ export class GameFullscreen {
     }
     const area = this.screen.parentElement!;
     const portrait=this.screen.height>this.screen.width;
-    const width=portrait?240:320,height=portrait?320:240;
+    const [width,height]=this.streamSize??[portrait?240:320,portrait?320:240];
     let scale = Math.min(area.clientWidth / width, area.clientHeight / height);
     if(this.integerScale){
       const dpr=window.devicePixelRatio||1,whole=Math.floor((scale*dpr)+1e-6);

@@ -6,11 +6,48 @@ interface Tap {
   target:HTMLElement;
 }
 
-// Some iOS versions still zoom on double taps with touch-action: manipulation.
-// Cancel only the end of a second short, stationary tap; never cancel a swipe.
+// Only stationary controller taps consume touch endings. Drags keep the
+// browser's scrolling policy, including when they start on a virtual button.
 export function setupTouchGestures(root:HTMLElement) {
   const ios=/iPhone|iPad|iPod/.test(navigator.userAgent)
     ||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+  const gameControls='[data-button],[data-dpad],.remote-frontend .remote-video';
+  // Track contacts separately so action taps are protected while holding a
+  // direction. Never consume a swipe, long hold, or moving multi-touch gesture.
+  const contacts=new Map<number,Tap>();
+  root.addEventListener('touchstart',event=>{
+    for(const touch of Array.from(event.changedTouches)) {
+      const target=touch.target||event.target;
+      if(!(target instanceof Element)||!target.closest(gameControls)||!root.contains(target))continue;
+      const control=target.closest<HTMLElement>(gameControls)!;
+      contacts.set(touch.identifier,{id:touch.identifier,x:touch.clientX,y:touch.clientY,time:event.timeStamp,target:control});
+    }
+  },{capture:true,passive:true});
+  root.addEventListener('touchmove',event=>{
+    for(const touch of Array.from(event.changedTouches)) {
+      const start=contacts.get(touch.identifier);
+      if(start&&Math.hypot(touch.clientX-start.x,touch.clientY-start.y)>10) {
+        if(event.touches.length>1){contacts.clear();return;}
+        contacts.delete(touch.identifier);
+      }
+    }
+  },{capture:true,passive:true});
+  root.addEventListener('touchcancel',event=>{
+    for(const touch of Array.from(event.changedTouches))contacts.delete(touch.identifier);
+  },{capture:true,passive:true});
+  root.addEventListener('touchend',event=>{
+    let tap=false;
+    for(const touch of Array.from(event.changedTouches)) {
+      const start=contacts.get(touch.identifier);contacts.delete(touch.identifier);
+      if(start&&event.timeStamp-start.time<=300
+        &&Math.hypot(touch.clientX-start.x,touch.clientY-start.y)<=10)tap=true;
+    }
+    if(tap&&event.cancelable)event.preventDefault();
+  },{capture:true,passive:false});
+  const preventGameGesture=(event:Event)=>{
+    if(event.cancelable&&event.target instanceof Element&&event.target.closest(gameControls)&&root.contains(event.target))event.preventDefault();
+  };
+  root.addEventListener('dblclick',preventGameGesture,{capture:true});
   if(!ios)return;
   const controlSelector='[data-button],[data-dpad],#control-settings-toggle';
   const isControl=(target:EventTarget|null)=>{
@@ -18,8 +55,8 @@ export function setupTouchGestures(root:HTMLElement) {
     const control=element?.closest(controlSelector);
     return !!control&&root.contains(control);
   };
-  // Cancel native selection/callouts, not touchstart or touchmove: dragging
-  // from a virtual control must still be able to scroll the page.
+  // Cancel selection/callouts without consuming page touchstart/touchmove;
+  // gestures outside controller hit areas keep their normal scrolling policy.
   const preventControlAction=(event:Event)=>{
     if(event.cancelable&&isControl(event.target))event.preventDefault();
   };

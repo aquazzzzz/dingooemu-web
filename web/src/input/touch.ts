@@ -7,7 +7,9 @@ export class Touch {
     root.addEventListener('pointerdown',e=> {
       if(!this.enabled||this.editing) return;
       const element=(e.target as HTMLElement).closest<HTMLElement>('[data-button],[data-dpad]'); if(!element) return;
-      e.preventDefault();
+      // Touch drags may become page scrolling; pointercancel releases the key.
+      // Mouse presses still suppress focus/selection and compatibility clicks.
+      if(e.pointerType!=='touch')e.preventDefault();
       if(document.activeElement instanceof HTMLElement&&document.activeElement.closest('[data-control-settings]'))document.activeElement.blur();
       element.setPointerCapture(e.pointerId);
       const mask=this.mask(element,e);

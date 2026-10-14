@@ -42,6 +42,15 @@ def main():
             ["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
         "core_and_bridge_source_sha256": digest.hexdigest(),
         "features": ["wasm-jit"],
+        "remote_play": {
+            "host_runtime": "Worker + AudioWorklet",
+            "video": "Capture the actual Worker-rendered HTML canvas; browser WebRTC encoding",
+            "audio": "Optional MediaStream branch from the existing AudioWorklet node; independent local monitor mute",
+            "pairing": "Versioned manual offer/answer or local Python server with one-time code and remembered approved devices; fresh LAN ICE with optional same-server UDP STUN address discovery; no TURN",
+            "frontend": "Approved phone can bootstrap windowed host RetroArch; native or web controller; runtime changes replace media on the same connection; authorized pause/resume closes game menu; watchdog releases input",
+            "input": "Reliable control channel; unordered input snapshots without retransmission; 500 ms release watchdog",
+            "validation": "See docs/remote-play.md; real-game two-context WebRTC and 5-minute stream stability"
+        },
         "core_worker": {
             "enabled_by_default_when_supported": True,
             "requires": ["AudioWorklet", "SharedArrayBuffer isolation", "Worker WebGL / OffscreenCanvas"],

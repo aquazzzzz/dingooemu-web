@@ -22,11 +22,48 @@ addToLibrary({
         });
     };
     Module['dingooWorkerStop'] = () => {
+      Module['dingooStreamAudioStop']?.();
       DingooWorker.rejectAll(new Error('Core Worker stopped'));
       PThread.terminateAllThreads();
       PlatformEmscriptenFreeBrowser();
       for (const audio of Object.values(emAudio))
         if (typeof audio?.close === 'function') audio.close().catch(() => {});
+    };
+    // Audio objects are owned by the browser thread even when the core is a
+    // pthread. Allocate this branch only while a remote-play session exists.
+    let dingooAudioTap;
+    Module['dingooStreamAudioStart'] = (muted) => {
+      if (dingooAudioTap) throw new Error('Audio stream already active');
+      const nodes = Object.values(emAudio).filter(value =>
+        typeof AudioWorkletNode !== 'undefined' && value instanceof AudioWorkletNode);
+      if (nodes.length !== 1) throw new Error('Game audio is not ready');
+      const node = nodes[0], context = node.context;
+      const output = context.createMediaStreamDestination(), monitor = context.createGain();
+      try {
+        node.connect(output);
+        monitor.gain.value = muted ? 0 : 1;
+        monitor.connect(context.destination);
+        node.connect(monitor);
+        node.disconnect(context.destination);
+      } catch (error) {
+        try { node.disconnect(output); node.disconnect(monitor); } catch {}
+        monitor.disconnect(); output.stream.getTracks().forEach(track => track.stop());
+        throw error;
+      }
+      dingooAudioTap = {node, context, output, monitor};
+      return output.stream;
+    };
+    Module['dingooStreamMonitorMuted'] = (muted) => {
+      if (dingooAudioTap) dingooAudioTap.monitor.gain.value = muted ? 0 : 1;
+    };
+    Module['dingooStreamAudioStop'] = () => {
+      const tap = dingooAudioTap;
+      if (!tap) return;
+      dingooAudioTap = undefined;
+      try { tap.node.disconnect(tap.output); tap.node.disconnect(tap.monitor);
+        if (tap.context.state !== 'closed') tap.node.connect(tap.context.destination);
+      } catch {}
+      tap.monitor.disconnect(); tap.output.stream.getTracks().forEach(track => track.stop());
     };
   `,
   $DingooWorker: {

@@ -44,6 +44,7 @@
 #include "../frontend.h"
 #include "../frontend_driver.h"
 #include "../../configuration.h"
+#include "../../audio/audio_driver.h"
 #include "../../content.h"
 #include "../../command.h"
 #include "../../runloop.h"
@@ -434,6 +435,8 @@ static void dingoo_worker_execute(void *data)
       case 21: cmd_frontend_refresh(); break;
       case 22: cmd_frontend_overlay_hidden(q->a); break;
       case 23: cmd_frontend_suspend(q->a); break;
+      /* An explicit value avoids coalescing two MUTE hotkeys in one frame. */
+      case 24: *audio_get_bool_ptr(AUDIO_ACTION_MUTE_ENABLE) = q->a != 0; result = 1; break;
       case 4: result = cmd_set_display_shader((const char*)q->a); break;
       case 5: result = retro_serialize_size(); break;
       case 6: result = retro_serialize((void*)q->a, q->b); break;

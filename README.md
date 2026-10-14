@@ -12,7 +12,7 @@ DingooEmu Web 在浏览器中运行丁果 A320（Dingoo A320）和歌美 A330（
 
 本站基于 RetroArch 的 WebAssembly 运行环境，让 DingooEmu 核心在浏览器中运行，并提供网页操作界面。
 
-网站支持中文、English、日本語，可安装为网页应用，并提供离线运行、游戏管理与即时存档。游戏由您从本机导入，本仓库不包含游戏。
+网站支持中文、English、日本語，可安装为网页应用，并提供离线运行、游戏管理与即时存档。支持通过导入导出或设备互传共享即时存档，并提供局域网串流。游戏由您从本机导入，本仓库不包含游戏。
 
 ### 目录结构
 
@@ -58,7 +58,7 @@ DingooEmu Web runs native games and applications for the Dingoo A320 and Gemei A
 
 This site uses RetroArch's WebAssembly runtime to run the DingooEmu core in the browser and provides a web interface for controlling it.
 
-The website supports Chinese, English, and Japanese. It can be installed as a web app and provides offline operation, game management, and save states. You import games from your own device; this repository does not include games.
+The website supports Chinese, English, and Japanese. It can be installed as a web app and provides offline operation, game management, and save states. Share save states through import/export or device transfer, and play remotely over a local network. You import games from your own device; this repository does not include games.
 
 ### Project structure
 
@@ -104,7 +104,7 @@ DingooEmu Web は、Dingoo A320 と Gemei A330 向けのネイティブゲーム
 
 このサイトは RetroArch の WebAssembly 実行環境を利用して DingooEmu コアをブラウザー上で動作させ、Web ベースの操作画面を提供しています。
 
-サイトは中国語、英語、日本語に対応し、Web アプリとしてインストールできます。オフラインでの実行、ゲーム管理、ステートセーブ機能を備えています。ゲームはお使いの端末からインポートしてください。このリポジトリにゲームは含まれていません。
+サイトは中国語、英語、日本語に対応し、Web アプリとしてインストールできます。オフラインでの実行、ゲーム管理、ステートセーブ機能を備えています。インポート・エクスポートやデバイス間転送によるステートセーブの共有と、LAN ストリーミングにも対応しています。ゲームはお使いの端末からインポートしてください。このリポジトリにゲームは含まれていません。
 
 ### ディレクトリ構成
 

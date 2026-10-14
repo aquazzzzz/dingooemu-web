@@ -49,12 +49,12 @@
       "sha256": "6e15174de2ca83eaacccc5b3ba1d76d64c8a181182a73815a1fa07ec57678276"
     },
     "runtime/worker/dingooemu_libretro.js": {
-      "bytes": 376322,
-      "sha256": "5614bb895c9436ca793aca96334b4e788364c811fff9f169ba50a66c62d5827b"
+      "bytes": 377612,
+      "sha256": "e835603e82c3a01a5508546a52aa905562670da8911a924b0e88fe223a885f03"
     },
     "runtime/worker/dingooemu_libretro.wasm": {
-      "bytes": 3839472,
-      "sha256": "3d1370ad1958071b7efb3a9591189d9b0fc292bd62c6a09165a971f5a67f28e7"
+      "bytes": 3839504,
+      "sha256": "d35509dbec7b9f717e6416905cb94b5eeeb5bcb4a804f954b0b27c1524b42c0f"
     },
     "runtime/frontend/assets.bin": {
       "bytes": 4108309,
@@ -66,11 +66,20 @@
     }
   },
   "runtime_build": {
-    "baseline_git_commit": "55e456cbc794e39f1d92470d1bccc0aff8ea93ec",
-    "core_and_bridge_source_sha256": "dc99dd07a020f199bc3e1d89237ac9454709bf377a24f4904b1298d8ca23f316",
+    "baseline_git_commit": "ba54d3d38987be11a7349557e11628ec0e0ededa",
+    "core_and_bridge_source_sha256": "5eb98ef39ec90cbf1d0c24e7cac62da57869f558ec781ce39fbbadcbc28d16da",
     "features": [
       "wasm-jit"
     ],
+    "remote_play": {
+      "host_runtime": "Worker + AudioWorklet",
+      "video": "Capture the actual Worker-rendered HTML canvas; browser WebRTC encoding",
+      "audio": "Optional MediaStream branch from the existing AudioWorklet node; independent local monitor mute",
+      "pairing": "Versioned manual offer/answer or local Python server with one-time code and remembered approved devices; fresh LAN ICE with optional same-server UDP STUN address discovery; no TURN",
+      "input": "Reliable control channel; unordered input snapshots without retransmission; 500 ms release watchdog",
+      "validation": "See docs/remote-play.md; real-game two-context WebRTC and 5-minute stream stability",
+      "frontend": "Approved phone can bootstrap windowed host RetroArch; native or web controller; runtime changes replace media on the same connection; authorized pause/resume closes game menu; watchdog releases input"
+    },
     "core_worker": {
       "enabled_by_default_when_supported": true,
       "requires": [

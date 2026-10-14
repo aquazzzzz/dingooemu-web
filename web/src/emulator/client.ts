@@ -4,6 +4,7 @@ import {path, validateFiles, MAX_SAVE_BYTES, type MountedFile} from '../storage/
 import {stateLength,type Snapshot} from '../storage/snapshots';
 import {displayShader,displayPreset} from './display-shader';
 import {frontendAssets} from './frontend-assets';
+import type {RemotePoint} from '../streaming/peer';
 
 interface FileStream {node:{mode:number};flags:number}
 interface FileSystem {
@@ -16,6 +17,9 @@ interface FileSystem {
 }
 
 interface Runtime {
+  dingooStreamAudioStart?(muted:boolean):MediaStream;
+  dingooStreamAudioStop?():void;
+  dingooStreamMonitorMuted?(muted:boolean):void;
   dingooWorkerWatch?():void;
   dingooWorkerStop?():void;
   dingooWorkerCall?(op:number,a?:number,b?:number):Promise<number>;
@@ -66,6 +70,52 @@ const saveRoot=base+'/userdata/saves/';
 // RetroArch owns rendering, pacing, input polling and audio on the selected
 // thread. Core exports cross to its owner asynchronously in Worker mode.
 export class EmulatorClient {
+  onMediaInvalidated:()=>void=()=>{};
+  private mediaStop?:()=>void;
+  get canStream(){return this.started&&(this.loadedContent||this.frontend)&&this.coreWorker&&!!this.module?.dingooStreamAudioStart&&typeof HTMLCanvasElement.prototype.captureStream==='function';}
+  get streamHostSupported(){return crossOriginIsolated&&typeof SharedArrayBuffer!=='undefined'&&typeof Worker!=='undefined'&&typeof OffscreenCanvas!=='undefined'&&typeof AudioContext!=='undefined'&&'audioWorklet' in AudioContext.prototype&&typeof HTMLCanvasElement.prototype.captureStream==='function';}
+  nativeInputBlocked:()=>boolean=()=>false;
+  private remotePoints:RemotePoint[]=[];
+  remoteTouches(points:RemotePoint[]) {
+    const canvas=this.runtimeCanvas;
+    if(!canvas){this.remotePoints=[];return;}
+    if(!this.frontend)points=[];
+    const previous=this.remotePoints;this.remotePoints=points;
+    const box=canvas.getBoundingClientRect();
+    const touch=(p:RemotePoint)=>({identifier:p.id+100000,target:canvas,clientX:box.left+p.x*box.width,clientY:box.top+p.y*box.height,pageX:box.left+p.x*box.width+scrollX,pageY:box.top+p.y*box.height+scrollY,screenX:box.left+p.x*box.width,screenY:box.top+p.y*box.height});
+    const dispatch=(name:string,changed:RemotePoint[])=>{
+      if(!changed.length)return;
+      const event=new Event(name,{bubbles:true,cancelable:true});
+      for(const key of ['touches','targetTouches'])Object.defineProperty(event,key,{value:points.map(touch)});
+      Object.defineProperty(event,'changedTouches',{value:changed.map(touch)});canvas.dispatchEvent(event);
+    };
+    dispatch('touchend',previous.filter(p=>!points.some(n=>n.id===p.id)));
+    dispatch('touchstart',points.filter(p=>!previous.some(n=>n.id===p.id)));
+    dispatch('touchmove',points.filter(p=>previous.some(n=>n.id===p.id&&(n.x!==p.x||n.y!==p.y))));
+  }
+  async captureMedia(fps:number):Promise<{stream:MediaStream;stop:()=>void}> {
+    if(!this.canStream||!this.runtimeCanvas||![30,60].includes(fps))throw new Error(t('此运行环境不能作为串流主机，请使用支持 Worker 和 AudioWorklet 的浏览器。'));
+    if(this.mediaStop)throw new Error(t('串流已经启动。'));
+    const runtime=this.module!;
+    const video=this.runtimeCanvas.captureStream(fps);
+    let cleanup:(()=>void)|undefined;
+    try {
+      const audio=runtime.dingooStreamAudioStart!(this.muted);
+      // Mute only the local monitor while streaming; keep PCM available to RTC.
+      const stream=new MediaStream([...video.getTracks(),...audio.getTracks()]);
+      const stop=()=>{
+        if(this.mediaStop!==stop)return;
+        this.mediaStop=undefined;stream.getTracks().forEach(track=>track.stop());
+        runtime.dingooStreamAudioStop?.();
+        if(this.started)void runtime.dingooWorkerCall!(24,Number(this.muted)).catch(()=>{});
+      };
+      cleanup=stop;
+      this.mediaStop=stop;
+      if(await runtime.dingooWorkerCall!(24,0)!==1)throw new Error(t('运行包需要更新，请刷新网页后重新导入游戏。'));
+      if(this.module!==runtime||this.mediaStop!==stop)throw new Error(t('串流已停止。'));
+      return {stream,stop};
+    }catch(error){cleanup?.();video.getTracks().forEach(track=>track.stop());runtime.dingooStreamAudioStop?.();throw error;}
+  }
   private module?:Runtime;
   private coreWorker=false;
   private loadGeneration=0;
@@ -125,6 +175,9 @@ export class EmulatorClient {
     this.canvasObserver=new ResizeObserver(resize);this.canvasObserver.observe(this.canvas);this.canvasObserver.observe(this.canvas.parentElement!);
     this.styleObserver=new MutationObserver(resize);this.styleObserver.observe(this.canvas,{attributes:true,attributeFilter:['style']});resize();
     for(const type of ['keydown','keyup','keypress'])view.addEventListener(type,event=>{if(event.bubbles)event.stopImmediatePropagation();},true);
+    for(const type of ['touchstart','touchmove','touchend','touchcancel','mousedown','mouseup','mousemove','pointerdown','pointermove','pointerup'])view.addEventListener(type,event=>{
+      if(event.isTrusted&&this.nativeInputBlocked()){event.preventDefault();event.stopImmediatePropagation();}
+    },{capture:true,passive:false});
     return view;
   }
   get audioBuffer(){return this.audioLatency;}
@@ -162,6 +215,7 @@ export class EmulatorClient {
   private paused=true;
   private suspended=false;
   private overlayHidden=false;
+  private streamController?:'web'|'retroarch';
   private overlayKey=`dingooemu-hybrid:${location.pathname.replace(/\/[^/]*$/, '/')}`+'neo-retropad-hidden';
   private frontend=false;
   private frontendWasPaused=false;
@@ -170,8 +224,15 @@ export class EmulatorClient {
   get isPaused(){return this.suspended||this.paused;}
   get isSuspended(){return this.suspended;}
   get inFrontend(){return this.frontend;}
+  get frontendMenuOpen(){return this.menuActive;}
+  async setStreamController(mode?:'web'|'retroarch'){
+    if(mode===this.streamController)return;
+    this.streamController=mode;
+    if(this.frontend&&this.started)await this.call('_cmd_frontend_overlay_hidden',22,Number(mode?mode==='web':this.overlayHidden));
+  }
   onMenuStatus:(active:boolean)=>void=()=>{};
   onContentClosed:()=>void=()=>{};
+  onFrontendRestart:()=>void=()=>{};
   onFrontendAction:(action:string,value:string)=>void=()=>{};
   frontendLibrary:()=>Promise<MountedFile[]>=async()=>[];
   private libraryRevision=0;
@@ -206,7 +267,7 @@ export class EmulatorClient {
     await this.setSuspended(false);
     await this.call('_cmd_unpause',2);
     await this.call('_cmd_frontend_enabled',19,1);
-    await this.call('_cmd_frontend_overlay_hidden',22,Number(this.overlayHidden));
+    await this.call('_cmd_frontend_overlay_hidden',22,Number(this.streamController?this.streamController==='web':this.overlayHidden));
     this.frontend=true;this.menuActive=true;this.onMenuStatus(true);
   }
   async leaveFrontend() {
@@ -221,6 +282,7 @@ export class EmulatorClient {
   }
   toggleMenu(){if(this.frontend&&!this.suspended)this.module?.EmscriptenSendCommand('MENU_TOGGLE');}
   private rememberOverlayState(state:number) {
+    if(this.streamController)return;
     if(!(state&16))return;
     const hidden=Boolean(state&32);
     if(hidden===this.overlayHidden)return;
@@ -279,7 +341,9 @@ export class EmulatorClient {
   setMuted(value:boolean) {
     if(value===this.muted)return;
     this.muted=value;
-    if(this.started)this.module?.EmscriptenSendCommand('MUTE');
+    if(this.mediaStop)this.module?.dingooStreamMonitorMuted?.(value);
+    else if(this.started&&this.coreWorker&&this.module?.dingooStreamAudioStart)void this.module.dingooWorkerCall!(24,Number(value)).catch(error=>this.onStatus('error',String(error)));
+    else if(this.started)this.module?.EmscriptenSendCommand('MUTE');
   }
   setFps(value:boolean) {
     if(value===this.fps)return;
@@ -432,12 +496,19 @@ export class EmulatorClient {
         preRun:[(module:Runtime)=>{module.ENV.LIBRARY_PATH=corePath;module.ENV.DISABLE_DETECT_ENTER_FULLSCREEN='1';module.ENV.DINGOO_WEB_FRONTEND='1';}],
         onAbort:(reason:unknown)=>{if(generation!==this.loadGeneration)return;this.module?.dingooWasmJitDispose?.();this.failed=new Error(String(reason));this.onStatus('error',String(reason));},
         fullscreenEnter:()=>{},fullscreenExit:()=>{},
-        retroArchExit:()=>{
+        retroArchExit:(core?:string|number,content?:string|number)=>{
           if(generation!==this.loadGeneration)return;
+          const restart=!this.stopping&&!this.failed&&this.frontend&&core===corePath&&!content;
           this.module?.dingooWasmJitDispose?.();
           this.started=false;clearInterval(this.poll);clearInterval(this.openFileTimer);
-          void this.flushFiles().catch(()=>{});
-          if(!this.stopping)this.onStatus(this.failed?'error':'stopped',this.failed?.message);
+          const saved=this.flushFiles();
+          if(restart){
+            void saved.then(()=>{if(generation===this.loadGeneration)this.onFrontendRestart();})
+              .catch(error=>{if(generation===this.loadGeneration)this.onStatus('error',String(error));});
+          }else{
+            void saved.catch(()=>{});
+            if(!this.stopping)this.onStatus(this.failed?'error':'stopped',this.failed?.message);
+          }
           this.exit?.();this.exit=undefined;
         },
       };
@@ -666,6 +737,7 @@ export class EmulatorClient {
   }
   input(update:InputUpdate) {
     const {source,buttons:mask,cancel}=update;
+    if(cancel&&(source==='*'||source==='remote'))this.remoteTouches([]);
     if(source==='*')this.sources.clear();
     else if(source.endsWith('*')){for(const key of this.sources.keys())if(key.startsWith(source.slice(0,-1)))this.sources.delete(key);}
     else if(mask)this.sources.set(source,mask);else this.sources.delete(source);
@@ -694,6 +766,7 @@ export class EmulatorClient {
     this.sentMask=mask;
   }
   private async dispose() {
+    this.onMediaInvalidated();this.mediaStop?.();
     this.input({source:'*',buttons:0,cancel:true});
     if(this.module&&this.started){
       await this.rememberOverlay();await this.setSuspended(false);
