@@ -22,11 +22,11 @@
     },
     "runtime/audioworklet/dingooemu_libretro.js": {
       "bytes": 368354,
-      "sha256": "502ede1c0cb686324d8f8247caaa6e098719e880a64c869ba2d4461bfd7d8cb6"
+      "sha256": "775d28ca588408f31d17521db854f2297da6c4cc19e3b1debe52ed7522371118"
     },
     "runtime/audioworklet/dingooemu_libretro.wasm": {
-      "bytes": 3836922,
-      "sha256": "3803d40e53add1bf257a4ddc2c0eaf715588cf67729479378f87b15ad8b07fc6"
+      "bytes": 3836001,
+      "sha256": "cc6d86c5ff0c1bab8284c0c97d69e0819ae63b5e9cf0fd747865c02556cb6483"
     },
     "runtime/dingooemu_libretro.info": {
       "bytes": 782,
@@ -34,11 +34,11 @@
     },
     "runtime/dingooemu_libretro.js": {
       "bytes": 315572,
-      "sha256": "c4437be4f1149ec2909641361a9b3fa50d835d6f954d1e434b5c337cdc122da3"
+      "sha256": "7b3d7258021b673666373e6fd1d5696a06f4f88b14f42fc3679db2a31daff2aa"
     },
     "runtime/dingooemu_libretro.wasm": {
-      "bytes": 3681220,
-      "sha256": "f76996c7154a9b4b32adfa74ca77eff3c5fff04de5813b900bdafb821d3d4a9d"
+      "bytes": 3675850,
+      "sha256": "9e4ac7bf894cb66e38b580c18e655fece3864d6dabc756b06bbe86cd4fa144be"
     },
     "runtime/font.ttf": {
       "bytes": 4474312,
@@ -49,12 +49,12 @@
       "sha256": "6e15174de2ca83eaacccc5b3ba1d76d64c8a181182a73815a1fa07ec57678276"
     },
     "runtime/worker/dingooemu_libretro.js": {
-      "bytes": 377612,
-      "sha256": "e835603e82c3a01a5508546a52aa905562670da8911a924b0e88fe223a885f03"
+      "bytes": 377870,
+      "sha256": "cd3756ce5a95d2221c9049107e735e5102a68d58750340aa074b174f06e410a0"
     },
     "runtime/worker/dingooemu_libretro.wasm": {
-      "bytes": 3839504,
-      "sha256": "d35509dbec7b9f717e6416905cb94b5eeeb5bcb4a804f954b0b27c1524b42c0f"
+      "bytes": 3845909,
+      "sha256": "b84d807cc14acf81a348c4cf778b6f19a17cbe536262ef4f11dcd3105e5bfcfe"
     },
     "runtime/frontend/assets.bin": {
       "bytes": 4108309,
@@ -66,8 +66,8 @@
     }
   },
   "runtime_build": {
-    "baseline_git_commit": "ba54d3d38987be11a7349557e11628ec0e0ededa",
-    "core_and_bridge_source_sha256": "5eb98ef39ec90cbf1d0c24e7cac62da57869f558ec781ce39fbbadcbc28d16da",
+    "baseline_git_commit": "4cfc46e480c26ed59c39c1bf32437935b0702891",
+    "core_and_bridge_source_sha256": "f947db4779462bca0bfe4244a19607fa2cefcdf0cb424fbd0ce93a8c821915a6",
     "features": [
       "wasm-jit"
     ],
@@ -76,9 +76,9 @@
       "video": "Capture the actual Worker-rendered HTML canvas; browser WebRTC encoding",
       "audio": "Optional MediaStream branch from the existing AudioWorklet node; independent local monitor mute",
       "pairing": "Versioned manual offer/answer or local Python server with one-time code and remembered approved devices; fresh LAN ICE with optional same-server UDP STUN address discovery; no TURN",
+      "frontend": "Approved phone can bootstrap windowed host RetroArch; native or web controller; runtime changes replace media on the same connection; authorized pause/resume closes game menu; watchdog releases input",
       "input": "Reliable control channel; unordered input snapshots without retransmission; 500 ms release watchdog",
-      "validation": "See docs/remote-play.md; real-game two-context WebRTC and 5-minute stream stability",
-      "frontend": "Approved phone can bootstrap windowed host RetroArch; native or web controller; runtime changes replace media on the same connection; authorized pause/resume closes game menu; watchdog releases input"
+      "validation": "See docs/remote-play.md; real-game two-context WebRTC and 5-minute stream stability"
     },
     "core_worker": {
       "enabled_by_default_when_supported": true,
@@ -89,6 +89,13 @@
       ],
       "fallback": "Existing main-thread runtime on missing features or startup failure",
       "audio_buffer_default_ms": 64
+    },
+    "readback_prewarm": {
+      "worker_only": true,
+      "wait_budget_after_restore_rpc_ms": 50,
+      "failure": "Cancel the new generation before resume; restore previous guest state and files on transaction failure; stay paused if rollback fails",
+      "audio": "Consume the existing once-only topup before core work on ready blocking Worker AudioWorklet; other paths retain first-flush fallback",
+      "validation": "docs/wasm-j-topup-once.md, docs/wasm-j-formal-prewarm.md, docs/wasm-j-install.md"
     },
     "audio_worker_wait": {
       "budget_ms": 24,

@@ -659,6 +659,14 @@ static size_t audioworklet_buffer_size(void *data)
 
 static bool audioworklet_use_float(void *data) { return true; }
 
+/* Resume preparation runs before the unpaused runloop snapshot is published. */
+bool audioworklet_ready_for_resume(void)
+{
+   const audioworklet_data_t *audio = audioworklet_static_data;
+   return audio && audio->driver_running && audio->ring_init
+         && audio->context_running && !audio->nonblock && audio->rate;
+}
+
 double audioworklet_queue_ms(void)
 {
    audioworklet_data_t *audio = audioworklet_static_data;

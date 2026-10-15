@@ -642,6 +642,25 @@ impl Runtime {
 
     /// Restore a serialized state without changing the emulator on failure.
     pub fn unserialize_state(&mut self, input: &[u8]) -> anyhow::Result<()> {
+        self.restore_state(input, false)
+    }
+
+    #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
+    pub fn unserialize_state_prewarmed(&mut self, input: &[u8]) -> anyhow::Result<()> {
+        self.restore_state(input, true)
+    }
+
+    #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
+    pub fn cancel_readback_precompile(&mut self) {
+        self.wasm_jit.clear();
+    }
+
+    #[cfg(all(feature = "wasm-jit", any(target_os = "emscripten", test)))]
+    fn readback_crosses_boundary(&self, pc: u32, len: usize) -> bool {
+        (1..len / 4).any(|i| self.is_instruction_block_boundary(pc.wrapping_add(i as u32 * 4)))
+    }
+
+    fn restore_state(&mut self, input: &[u8], _prewarm: bool) -> anyhow::Result<()> {
         let app = self
             .app
             .as_ref()
@@ -672,6 +691,9 @@ impl Runtime {
             file.save_path = Some(root.join(relative));
         }
 
+        // Capture only after the new snapshot has passed all validation.
+        #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
+        let seed = if _prewarm { self.wasm_jit.readback_seed() } else { Vec::new() };
         #[cfg(feature = "standalone")]
         let host_audio_output_enabled = self.audio.host_output_enabled();
         self.cpu = state.cpu;
@@ -699,6 +721,12 @@ impl Runtime {
         self.locale_ansi_buffer = state.locale_ansi_buffer;
         self.framebuffer_submitted = state.framebuffer_submitted;
         self.clear_instruction_cache();
+        #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
+        if _prewarm {
+            let valid = seed.into_iter().filter(|(pc, code)|
+                !self.readback_crosses_boundary(*pc, code.len())).collect();
+            self.wasm_jit.precompile_readback(&self.memory, valid);
+        }
         Ok(())
     }
 
@@ -2335,6 +2363,23 @@ impl Default for Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature="wasm-jit")]
+    #[test]
+    fn readback_current_hook_and_special_boundaries() {
+        let mut runtime=Runtime::default();let pc=0x1000;
+        assert!(!runtime.readback_crosses_boundary(pc,16));
+        let hook=pc+4;let (word,mask)=hook_filter_location(hook);
+        runtime.hooked_addrs.insert(hook,"OSTimeGet".to_owned());runtime.hook_filter[word]|=mask;
+        assert!(runtime.readback_crosses_boundary(pc,16));
+        runtime.hooked_addrs.remove(&hook);runtime.hook_filter[word]&=!mask;
+        assert!(!runtime.readback_crosses_boundary(pc,16));
+        runtime.app_main_entry=Some(pc+8);assert!(runtime.readback_crosses_boundary(pc,16));
+        runtime.app_main_entry=None;runtime.app_main_init_check_address=Some(pc+12);
+        assert!(runtime.readback_crosses_boundary(pc,16));
+        assert!(runtime.readback_crosses_boundary(TASK_RETURN_ADDRESS-4,16));
+    }
+
+
 
     /// Invoked by the JS game runner. Normalize every unordered map using the
     /// original Rust types; do not ignore scheduler/file/GUI differences.

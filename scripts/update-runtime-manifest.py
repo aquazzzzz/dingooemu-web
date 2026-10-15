@@ -28,7 +28,8 @@ def main():
     sources.extend(root / "scripts" / name for name in (
         "build-runtime.sh", "build-audioworklet.sh", "build-worker.sh", "toolchain.sh",
         "library_dingoo_wasm_jit.js", "library_dingoo_worker.js", "pack-frontend.py"))
-    sources.extend(root / name for name in ("retroarch-src/frontend/drivers/platform_emscripten.c", "retroarch-src/frontend/drivers/platform_emscripten.h", "retroarch-src/emscripten/library_platform_emscripten.js", "retroarch-src/audio/drivers/audioworklet.c", "retroarch-src/runloop.c", "retroarch-src/command.c", "retroarch-src/menu/cbs/menu_cbs_ok.c", "retroarch-src/menu/cbs/menu_cbs_sublabel.c", "retroarch-src/menu/menu_displaylist.c"))
+    sources.extend(root / name for name in ("retroarch-src/frontend/drivers/platform_emscripten.c", "retroarch-src/frontend/drivers/platform_emscripten.h", "retroarch-src/emscripten/library_platform_emscripten.js", "retroarch-src/audio/audio_driver.c", "retroarch-src/audio/drivers/audioworklet.c", "retroarch-src/runloop.c", "retroarch-src/command.c", "retroarch-src/menu/cbs/menu_cbs_ok.c", "retroarch-src/menu/cbs/menu_cbs_sublabel.c", "retroarch-src/menu/menu_displaylist.c"))
+    sources.extend(root / name for name in ("web/src/emulator/client.ts", "web/src/emulator/readback-prewarm.ts"))
     digest = hashlib.sha256()
     sources.append(root / "retroarch-src/gfx/video_driver.c")
     sources.append(root / "retroarch-src/input/input_driver.c")
@@ -56,6 +57,13 @@ def main():
             "requires": ["AudioWorklet", "SharedArrayBuffer isolation", "Worker WebGL / OffscreenCanvas"],
             "fallback": "Existing main-thread runtime on missing features or startup failure",
             "audio_buffer_default_ms": 64
+        },
+        "readback_prewarm": {
+            "worker_only": True,
+            "wait_budget_after_restore_rpc_ms": 50,
+            "failure": "Cancel the new generation before resume; restore previous guest state and files on transaction failure; stay paused if rollback fails",
+            "audio": "Consume the existing once-only topup before core work on ready blocking Worker AudioWorklet; other paths retain first-flush fallback",
+            "validation": "docs/wasm-j-topup-once.md, docs/wasm-j-formal-prewarm.md, docs/wasm-j-install.md"
         },
         "audio_worker_wait": {
             "budget_ms": 24,

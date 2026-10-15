@@ -2958,8 +2958,8 @@ static void audio_driver_pause_track(audio_driver_state_t *audio_st,
  * first of resumed core audio, so the device drains, and rate control
  * refills it too slowly to keep the driver's pulls whole.
  *
- * On the first flush rather than at the resume, so it lands after that hole
- * whatever its length; the surplus is what rate control already takes out.
+ * Ready blocking Worker AudioWorklet output fills at resume before core work;
+ * other or unavailable output keeps the first-flush fallback.
  * Chunked against a driver's per-write limit and bounded by write_avail(),
  * so a blocking write cannot wait on it.
  **/
@@ -2982,6 +2982,28 @@ static void audio_driver_resume_topup(audio_driver_state_t *audio_st)
          break;
       room -= n;
    }
+}
+
+#if defined(DINGOO_CORE_WORKER) && defined(HAVE_AUDIOWORKLET)
+extern bool audioworklet_ready_for_resume(void);
+#endif
+/* Caller holds the audio state lock. A continuous stream owes no new fill. */
+static void audio_driver_prepare_resume(audio_driver_state_t *audio_st,
+      bool was_silenced)
+{
+   if (was_silenced)
+   {
+      audio_st->fade_in_pending = true;
+      audio_st->resume_topup_pending = true;
+#if defined(DINGOO_CORE_WORKER) && defined(HAVE_AUDIOWORKLET)
+      /* Consume the existing fill before resumed core work, once only.
+       * An unavailable/nonblocking device keeps the first-flush fallback. */
+      if (audio_st->current_audio == &audio_audioworklet
+            && audioworklet_ready_for_resume())
+         audio_driver_resume_topup(audio_st);
+#endif
+   }
+   audio_st->pause_mute_frames = 0;
 }
 
 static void audio_driver_flush(audio_driver_state_t *audio_st,
@@ -5024,23 +5046,7 @@ void audio_driver_pause_fade(bool paused)
 
    if (!paused)
    {
-      /* Ramp the first frames of whatever comes back, in audio_driver_flush;
-       * nothing to write here, the core has not produced it yet.
-       *
-       * Only when the stream was actually taken down: a resume can arrive
-       * without its pause (menu_pause_libretro turned off from inside the
-       * menu it paused), and ramping audio that never stopped is a dip in the
-       * middle of it. */
-      if (was_silenced)
-      {
-         audio_st->fade_in_pending = true;
-         /* And refill the device ahead of that first frame; see
-          * audio_driver_resume_topup(). */
-         audio_st->resume_topup_pending = true;
-      }
-      /* Whatever the pipeline was holding at the pause is long gone; do not
-       * take the resumed audio for it. */
-      audio_st->pause_mute_frames = 0;
+      audio_driver_prepare_resume(audio_st, was_silenced);
       audio_driver_state_unlock();
       return;
    }

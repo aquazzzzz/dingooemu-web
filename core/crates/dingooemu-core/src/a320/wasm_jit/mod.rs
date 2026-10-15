@@ -183,6 +183,47 @@ impl Engine {
         self.requests = 0;
     }
 
+    // Readback metadata is local to one successful restore; no function/table
+    // entries survive invalidation. No work is added to ordinary dispatch.
+    #[cfg(target_os = "emscripten")]
+    pub(crate) fn readback_seed(&self) -> Vec<(u32, Vec<u8>)> {
+        if !self.is_enabled() { return Vec::new(); }
+        let mut seed: Vec<_> = self.slots.iter()
+            .filter(|e| e.request != 0 && !e.failed)
+            .take(MAX_REQUESTS).map(|e| (e.start, e.code.clone())).collect();
+        seed.sort_by_key(|e| e.0);
+        seed
+    }
+
+    #[cfg(any(target_os = "emscripten", test))]
+    fn readback_code_valid(start: u32, code: &[u8], memory: &Memory) -> bool {
+        if start % 4 != 0 || code.is_empty() || code.len() % 4 != 0
+            || !memory.instruction_bytes_match(start, code) { return false; }
+        let words: Vec<_> = code.chunks_exact(4)
+            .map(|x| u32::from_le_bytes(x.try_into().unwrap())).collect();
+        let count = emitter::prefix_len(&words);
+        count >= MIN_BLOCK_LENGTH && count * 4 == code.len()
+    }
+
+    #[cfg(target_os = "emscripten")]
+    pub(crate) fn precompile_readback(&mut self, memory: &Memory, seed: Vec<(u32, Vec<u8>)>) {
+        if !self.is_enabled() || self.requests != 0 || !self.slots.is_empty() { return; }
+        for (start, code) in seed.into_iter().take(MAX_REQUESTS) {
+            if !Self::readback_code_valid(start, &code, memory) { continue; }
+            let words: Vec<_> = code.chunks_exact(4)
+                .map(|x| u32::from_le_bytes(x.try_into().unwrap())).collect();
+            let module = emitter::emit_guarded(start, &words, self.shared,
+                memory.jit_code_ram_offset(start, code.len()));
+            let request = bridge::submit(self.session, &module.bytes);
+            if request == 0 { continue; }
+            self.entries.insert(start, self.slots.len());
+            self.slots.push(Entry { start, hits: HOT_THRESHOLD, request, code,
+                flags: u8::from(module.branch) | (u8::from(module.code_guard) << 1),
+                ..Entry::default() });
+            self.requests += 1;
+        }
+    }
+
     fn entry_index(&mut self, start: u32, hint: &mut CacheHint) -> usize {
         if hint.generation == self.generation
             && self

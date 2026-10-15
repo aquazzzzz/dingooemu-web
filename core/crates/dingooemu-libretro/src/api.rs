@@ -628,6 +628,25 @@ pub extern "C" fn retro_unserialize(data: *const c_void, size: usize) -> bool {
     }
 }
 
+// Worker-only opt-in; normal retro_unserialize keeps its existing behavior.
+#[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
+#[no_mangle]
+pub extern "C" fn dingooemu_unserialize_prewarmed(data: *const c_void, size: usize) -> bool {
+    let Some(emulator) = (unsafe { EMULATOR.as_mut() }) else { return false; };
+    if data.is_null() || size < 32 { return false; }
+    let input = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) };
+    match emulator.unserialize_state_prewarmed(input) {
+        Ok(()) => { crate::frame_pacing::reset(); apply_core_options(emulator); true }
+        Err(error) => { log::error!("Failed to unserialize state: {error}"); false }
+    }
+}
+
+#[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
+#[no_mangle]
+pub extern "C" fn dingooemu_cancel_readback_precompile() {
+    if let Some(emulator) = unsafe { EMULATOR.as_mut() } { emulator.cancel_readback_precompile(); }
+}
+
 #[no_mangle]
 pub extern "C" fn retro_cheat_reset() {
     if let Some(emulator) = unsafe { EMULATOR.as_mut() } {

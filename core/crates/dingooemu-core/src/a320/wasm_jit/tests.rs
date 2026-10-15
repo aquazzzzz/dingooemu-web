@@ -1493,3 +1493,29 @@ fn pending_short_budget_and_unguarded_entries_keep_full_rust_code_checks() {
         assert_eq!(hint.generation, 0);
     }
 }
+
+fn readback_fixture() -> (Memory,u32,Vec<u8>) {
+    let mut memory=Memory::new();let pc=0x1000;
+    let words=[0x2402_0001u32,0x2442_0001,0x2442_0001,0x2442_0001];
+    for (i,word) in words.iter().enumerate(){memory.write_u32(pc+(i as u32)*4,*word).unwrap();}
+    (memory,pc,words.iter().flat_map(|x|x.to_le_bytes()).collect())
+}
+#[test]
+fn readback_rejects_code_changes() {
+    let (mut memory,pc,code)=readback_fixture();
+    assert_eq!(Engine::readback_code_valid(pc,&code,&memory),true);
+    memory.write_u32(pc+4,0x2442_0002).unwrap();
+    assert_eq!(Engine::readback_code_valid(pc,&code,&memory),false);
+    memory.write_u32(pc+4,0x2442_0001).unwrap();
+    assert_eq!(Engine::readback_code_valid(pc,&code,&memory),true);
+}
+#[test]
+fn readback_rejects_malformed() {
+    let (memory,pc,code)=readback_fixture();
+    for bytes in [&[][..],&code[..3],&code[..4]] {
+        assert_eq!(Engine::readback_code_valid(pc,bytes,&memory),false);
+    }
+}
+
+#[test]
+fn readback_rejects_unaligned_pc() {let (m,pc,c)=readback_fixture();assert!(!Engine::readback_code_valid(pc+1,&c,&m));}

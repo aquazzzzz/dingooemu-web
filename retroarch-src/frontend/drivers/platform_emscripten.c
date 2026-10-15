@@ -414,6 +414,8 @@ extern void dingooemu_state_present(void);
 extern unsigned dingooemu_wasm_jit_abi(void);
 extern double dingooemu_wasm_jit_metric(unsigned);
 extern unsigned dingooemu_set_wasm_jit_enabled(unsigned);
+extern bool dingooemu_unserialize_prewarmed(const void*, size_t);
+extern void dingooemu_cancel_readback_precompile(void);
 extern void DingooWorkerComplete(int, double);
 extern double audioworklet_queue_ms(void), audioworklet_base_latency_ms(void), audioworklet_output_latency_ms(void);
 static int dingoo_worker_jit;
@@ -440,7 +442,23 @@ static void dingoo_worker_execute(void *data)
       case 4: result = cmd_set_display_shader((const char*)q->a); break;
       case 5: result = retro_serialize_size(); break;
       case 6: result = retro_serialize((void*)q->a, q->b); break;
-      case 7: result = retro_unserialize((const void*)q->a, q->b); break;
+      case 7:
+         result = (runloop_state_get_ptr()->flags & RUNLOOP_FLAG_PAUSED)
+            ? dingooemu_unserialize_prewarmed((const void*)q->a, q->b)
+            : retro_unserialize((const void*)q->a, q->b);
+         break;
+      case 25:
+         if (runloop_state_get_ptr()->flags & RUNLOOP_FLAG_PAUSED)
+            result = EM_ASM_DOUBLE({
+               const s = Module['dingooWasmJitStats']();
+               return !s.requests ? 2 : s.failed ? -1 : s.requests === s.ready ? 1 : 0;
+            });
+         else result = -1;
+         break;
+      case 26:
+         if (runloop_state_get_ptr()->flags & RUNLOOP_FLAG_PAUSED)
+         { dingooemu_cancel_readback_precompile(); result = 1; }
+         break;
       case 8: result = dingooemu_flush_save_files(); break;
       case 9: cmd_finish_load_content_animation(); dingooemu_state_present(); break;
       case 10: dingooemu_measure_begin(); break;

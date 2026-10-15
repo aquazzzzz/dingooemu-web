@@ -144,6 +144,19 @@ impl Emulator {
         }
     }
 
+    #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
+    pub fn unserialize_state_prewarmed(&mut self, input: &[u8]) -> anyhow::Result<()> {
+        match &mut self.runtime {
+            Runtime::A320(runtime) => runtime.unserialize_state_prewarmed(input),
+            Runtime::A330(runtime) => runtime.unserialize_state(input),
+        }
+    }
+
+    #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
+    pub fn cancel_readback_precompile(&mut self) {
+        if let Runtime::A320(runtime) = &mut self.runtime { runtime.cancel_readback_precompile(); }
+    }
+
     pub fn set_jit_enabled(&mut self, enabled: bool) {
         match &mut self.runtime {
             Runtime::A320(runtime) => runtime.set_jit_enabled(enabled),

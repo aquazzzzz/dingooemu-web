@@ -1,3 +1,4 @@
+import {waitForReadbackPrewarm} from './readback-prewarm';
 import {t,literal} from '../i18n';
 import {buttons, defaults, type Button, type InputUpdate} from '../input/state';
 import {path, validateFiles, MAX_SAVE_BYTES, type MountedFile} from '../storage/saves';
@@ -650,13 +651,15 @@ export class EmulatorClient {
       const view=runtime.HEAPU8.subarray(ptr,ptr+capacity);return new Uint8Array(view.subarray(0,stateLength(view)));
     } finally {runtime._free(ptr);}
   }
-  private async restoreState(state:Uint8Array) {
+  private async restoreState(state:Uint8Array,onRestored?:()=>void) {
     const runtime=this.module!,capacity=await this.call('_retro_serialize_size',5);stateLength(state);
     if(state.length>capacity)throw new Error(t("即时存档平台不匹配。"));
     const ptr=runtime._malloc(state.length);if(!ptr)throw new Error(t("内存不足，无法读取即时存档。"));
     try {runtime.HEAPU8.set(state,ptr);
       if(!await this.call('_retro_unserialize',7,ptr,state.length))throw new Error(t("核心拒绝此即时存档，当前进度已保留。"));
     } finally {runtime._free(ptr);}
+    onRestored?.();
+    if(this.coreWorker)await waitForReadbackPrewarm(op=>runtime.dingooWorkerCall!(op));
   }
   async captureSnapshot<T>(save:(state:Uint8Array,files:MountedFile[],frames:number)=>Promise<T>):Promise<T> {
     if(!this.started||!this.module)throw new Error(t("请先运行游戏。"));
@@ -681,10 +684,11 @@ export class EmulatorClient {
       await this.flushFiles();this.stateBusy=true;
       previousFiles=await this.currentFiles();previousState=await this.captureState();
       filesChanged=true;this.replaceFiles(snapshot.files);
-      await this.restoreState(snapshot.state);coreChanged=true;
+      await this.restoreState(snapshot.state,()=>{coreChanged=true;});
       // One revision-checked transaction commits the restored writable files.
       await this.fileWriter(snapshot.files);this.fileRevision++;this.savedRevision=this.fileRevision;
       if(this.coreWorker)await runtime.dingooWorkerCall!(9);else{runtime._cmd_finish_load_content_animation?.();runtime._dingooemu_state_present?.();}this.onFileStatus(t("读档文件已保存 · {0} 个",snapshot.files.length),false);
+      await this.setSuspended(false);
       await this.call('_cmd_unpause',2);this.paused=false;
     } catch(error) {
       try {if(filesChanged&&previousFiles)this.replaceFiles(previousFiles);if(coreChanged&&previousState)await this.restoreState(previousState);}
