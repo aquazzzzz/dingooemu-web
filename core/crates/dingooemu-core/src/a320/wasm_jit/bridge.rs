@@ -4,6 +4,7 @@
 #[cfg(target_os = "emscripten")]
 extern "C" {
     fn dingoo_wasm_jit_create() -> u32;
+    fn dingoo_wasm_jit_create_limited(limit: u32) -> u32;
     fn dingoo_wasm_jit_shared() -> u32;
     fn dingoo_wasm_jit_submit(session: u32, bytes: *const u8, len: u32) -> u32;
     fn dingoo_wasm_jit_poll(session: u32, request: u32) -> i32;
@@ -80,4 +81,17 @@ pub(super) fn release(session: u32) {
     }
     #[cfg(not(target_os = "emscripten"))]
     let _ = session;
+}
+
+/// A330 requests a bounded 320-entry session; the A320 default remains 256.
+pub(super) fn create_limited(limit: usize) -> u32 {
+    #[cfg(target_os = "emscripten")]
+    unsafe {
+        return dingoo_wasm_jit_create_limited(limit as u32);
+    }
+    #[cfg(not(target_os = "emscripten"))]
+    {
+        let _ = limit;
+        0
+    }
 }

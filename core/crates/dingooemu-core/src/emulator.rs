@@ -154,7 +154,9 @@ impl Emulator {
 
     #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
     pub fn cancel_readback_precompile(&mut self) {
-        if let Runtime::A320(runtime) = &mut self.runtime { runtime.cancel_readback_precompile(); }
+        if let Runtime::A320(runtime) = &mut self.runtime {
+            runtime.cancel_readback_precompile();
+        }
     }
 
     pub fn set_jit_enabled(&mut self, enabled: bool) {
@@ -168,13 +170,7 @@ impl Emulator {
     pub fn wasm_jit_metric(&self, index: u32) -> f64 {
         match &self.runtime {
             Runtime::A320(runtime) => runtime.wasm_jit_metric(index),
-            Runtime::A330(_) => {
-                if index <= 11 {
-                    0.0
-                } else {
-                    -1.0
-                }
-            }
+            Runtime::A330(runtime) => runtime.wasm_jit_metric(index),
         }
     }
 
@@ -459,6 +455,16 @@ impl Emulator {
         match &mut self.runtime {
             Runtime::A320(runtime) => runtime.clear_cheats(),
             Runtime::A330(runtime) => runtime.clear_cheats(),
+        }
+    }
+
+    pub fn is_a330(&self) -> bool {
+        matches!(self.runtime, Runtime::A330(_))
+    }
+    pub fn take_queued_a330_audio_samples(&mut self, maximum_frames: usize) -> Option<Vec<i16>> {
+        match &mut self.runtime {
+            Runtime::A330(runtime) => Some(runtime.audio.take_queued_samples(maximum_frames)),
+            Runtime::A320(_) => None,
         }
     }
 

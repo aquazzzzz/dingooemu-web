@@ -60,6 +60,10 @@ pub unsafe extern "C" fn dingooemu_profile_copy(output: *mut u8, capacity: usize
 }
 
 #[no_mangle]
+pub extern "C" fn dingooemu_a330_content() -> bool {
+    unsafe { EMULATOR.as_ref() }.is_some_and(Emulator::is_a330)
+}
+#[no_mangle]
 pub extern "C" fn dingooemu_audio_queue_ms() -> f64 {
     unsafe { EMULATOR.as_ref() }
         .and_then(Emulator::queued_audio_ms)
@@ -181,6 +185,7 @@ pub extern "C" fn retro_get_region() -> c_uint {
 
 #[no_mangle]
 pub extern "C" fn retro_load_game(info: *const RetroGameInfo) -> bool {
+    crate::audio_supply::reset();
     let Some(info) = (unsafe { info.as_ref() }) else {
         return false;
     };
@@ -264,9 +269,6 @@ pub extern "C" fn dingooemu_set_wasm_jit_enabled(enabled: c_uint) -> c_uint {
         let Some(emulator) = (unsafe { EMULATOR.as_mut() }) else {
             return 0;
         };
-        if emulator.guest_architecture() != dingooemu_core::content::GuestArchitecture::Mips32 {
-            return 0;
-        }
         let enabled = enabled != 0;
         unsafe {
             dingoo_wasm_jit_set_enabled(u32::from(enabled));
@@ -303,6 +305,7 @@ pub extern "C" fn dingooemu_wasm_jit_metric(index: c_uint) -> f64 {
 
 #[no_mangle]
 pub extern "C" fn retro_unload_game() {
+    crate::audio_supply::reset();
     update_diagnostic_audio_buffer_status(false);
     unregister_async_audio();
     if let Some(emulator) = unsafe { EMULATOR.as_mut() } {
@@ -349,8 +352,9 @@ pub extern "C" fn retro_run() {
     let Some(diagnostic_timer) = diagnostic_timer else {
         submit_video_frame(emulator);
 
-        let samples = emulator.take_audio_samples();
-        if crate::audio_output::enqueue(&samples).is_none()
+        let samples = crate::audio_supply::take_samples(emulator);
+        if !samples.is_empty()
+            && crate::audio_output::enqueue(&samples).is_none()
             && callbacks::audio_sample_batch(samples.as_ptr(), samples.len() / 2).is_none()
         {
             for sample in samples.as_chunks::<2>().0.iter() {
@@ -367,19 +371,23 @@ pub extern "C" fn retro_run() {
     let video_elapsed = video_timer.elapsed();
 
     let audio_timer = Instant::now();
-    let samples = emulator.take_audio_samples();
+    let samples = crate::audio_supply::take_samples(emulator);
     let audio_frames_requested = samples.len() / 2;
-    let audio_frames_accepted = crate::audio_output::enqueue(&samples).unwrap_or_else(|| {
-        callbacks::audio_sample_batch(samples.as_ptr(), audio_frames_requested).map_or_else(
-            || {
-                for sample in samples.as_chunks::<2>().0.iter() {
-                    callbacks::audio_sample(sample[0], sample[1]);
-                }
-                audio_frames_requested
-            },
-            |accepted| accepted.min(audio_frames_requested),
-        )
-    });
+    let audio_frames_accepted = if samples.is_empty() {
+        0
+    } else {
+        crate::audio_output::enqueue(&samples).unwrap_or_else(|| {
+            callbacks::audio_sample_batch(samples.as_ptr(), audio_frames_requested).map_or_else(
+                || {
+                    for sample in samples.as_chunks::<2>().0.iter() {
+                        callbacks::audio_sample(sample[0], sample[1]);
+                    }
+                    audio_frames_requested
+                },
+                |accepted| accepted.min(audio_frames_requested),
+            )
+        })
+    };
     let audio_elapsed = audio_timer.elapsed();
     crate::web_measurement::record_frame(
         diagnostic_timer,
@@ -499,6 +507,7 @@ unsafe extern "C" fn frontend_audio_buffer_status(
 
 fn register_async_audio() {
     crate::frame_pacing::reset();
+    crate::audio_supply::reset();
     crate::audio_output::reset(true);
     let mut audio_callback = RetroAudioCallback {
         callback: Some(crate::audio_output::callback),
@@ -557,11 +566,13 @@ fn unregister_async_audio() {
     }
     crate::audio_output::reset(false);
     crate::frame_pacing::reset();
+    crate::audio_supply::reset();
 }
 
 unsafe extern "C" fn frontend_async_audio_set_state(enabled: bool) {
     crate::audio_output::set_enabled(enabled);
     crate::frame_pacing::reset();
+    crate::audio_supply::reset();
 }
 
 unsafe extern "C" fn frontend_frame_time(usec: i64) {
@@ -572,6 +583,7 @@ unsafe extern "C" fn frontend_frame_time(usec: i64) {
 
 #[no_mangle]
 pub extern "C" fn retro_reset() {
+    crate::audio_supply::reset();
     let Some(emulator) = (unsafe { EMULATOR.as_mut() }) else {
         return;
     };
@@ -579,6 +591,7 @@ pub extern "C" fn retro_reset() {
         log::error!("Reset failed: {error}");
     } else {
         crate::frame_pacing::reset();
+        crate::audio_supply::reset();
         apply_core_options(emulator);
     }
 }
@@ -618,6 +631,7 @@ pub extern "C" fn retro_unserialize(data: *const c_void, size: usize) -> bool {
     match emulator.unserialize_state(input) {
         Ok(()) => {
             crate::frame_pacing::reset();
+            crate::audio_supply::reset();
             apply_core_options(emulator);
             true
         }
@@ -632,19 +646,33 @@ pub extern "C" fn retro_unserialize(data: *const c_void, size: usize) -> bool {
 #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
 #[no_mangle]
 pub extern "C" fn dingooemu_unserialize_prewarmed(data: *const c_void, size: usize) -> bool {
-    let Some(emulator) = (unsafe { EMULATOR.as_mut() }) else { return false; };
-    if data.is_null() || size < 32 { return false; }
+    let Some(emulator) = (unsafe { EMULATOR.as_mut() }) else {
+        return false;
+    };
+    if data.is_null() || size < 32 {
+        return false;
+    }
     let input = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) };
     match emulator.unserialize_state_prewarmed(input) {
-        Ok(()) => { crate::frame_pacing::reset(); apply_core_options(emulator); true }
-        Err(error) => { log::error!("Failed to unserialize state: {error}"); false }
+        Ok(()) => {
+            crate::frame_pacing::reset();
+            crate::audio_supply::reset();
+            apply_core_options(emulator);
+            true
+        }
+        Err(error) => {
+            log::error!("Failed to unserialize state: {error}");
+            false
+        }
     }
 }
 
 #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
 #[no_mangle]
 pub extern "C" fn dingooemu_cancel_readback_precompile() {
-    if let Some(emulator) = unsafe { EMULATOR.as_mut() } { emulator.cancel_readback_precompile(); }
+    if let Some(emulator) = unsafe { EMULATOR.as_mut() } {
+        emulator.cancel_readback_precompile();
+    }
 }
 
 #[no_mangle]

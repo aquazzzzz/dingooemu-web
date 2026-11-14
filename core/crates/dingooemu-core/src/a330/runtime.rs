@@ -51,12 +51,14 @@ enum SliceEvent {
 
 /// Instruction budget for a supplemental task rotation. Peer tasks only need
 /// a short round to refill the audio device buffer, not a full slice.
-const SUPPLEMENTAL_QUANTUM: u64 = 256_000;
+pub(super) const SUPPLEMENTAL_QUANTUM: u64 = 256_000;
 
 struct CachedInstructionBlock {
     start: u32,
     len: u8,
     instructions: [DecodedArmInstruction; MAX_INSTRUCTION_BLOCK_LEN],
+    #[cfg(feature = "wasm-jit")]
+    wasm_hint: usize,
 }
 
 fn instruction_block_cache_index(address: u32) -> usize {
@@ -68,6 +70,8 @@ fn empty_instruction_block_cache() -> Box<[CachedInstructionBlock]> {
         start: 0,
         len: 0,
         instructions: [DecodedArmInstruction::default(); MAX_INSTRUCTION_BLOCK_LEN],
+        #[cfg(feature = "wasm-jit")]
+        wasm_hint: usize::MAX,
     })
     .take(INSTRUCTION_BLOCK_CACHE_SLOTS)
     .collect::<Vec<_>>()
@@ -390,6 +394,8 @@ pub(crate) struct Runtime {
     code_generation: u64,
     #[cfg(feature = "jit")]
     jit: JitEngine,
+    #[cfg(feature = "wasm-jit")]
+    wasm_jit: super::wasm_jit::Engine,
 }
 
 impl Runtime {
@@ -466,6 +472,8 @@ impl Runtime {
             code_generation: 1,
             #[cfg(feature = "jit")]
             jit: JitEngine::new(),
+            #[cfg(feature = "wasm-jit")]
+            wasm_jit: super::wasm_jit::Engine::new(),
         })
     }
 
@@ -482,8 +490,15 @@ impl Runtime {
     pub(crate) fn set_jit_enabled(&mut self, enabled: bool) {
         #[cfg(feature = "jit")]
         self.jit.set_enabled(enabled);
-        #[cfg(not(feature = "jit"))]
+        #[cfg(feature = "wasm-jit")]
+        self.wasm_jit.set_enabled(enabled);
+        #[cfg(not(any(feature = "jit", feature = "wasm-jit")))]
         let _ = enabled;
+    }
+
+    #[cfg(feature = "wasm-jit")]
+    pub(crate) fn wasm_jit_metric(&self, index: u32) -> f64 {
+        self.wasm_jit.metric(index)
     }
 
     fn present_early_exit(&mut self) {
@@ -510,6 +525,8 @@ impl Runtime {
         let instruction_policy = self.cpu.unknown_instruction_policy();
         #[cfg(feature = "jit")]
         let jit_enabled = self.jit.is_enabled();
+        #[cfg(feature = "wasm-jit")]
+        let wasm_jit_enabled = self.wasm_jit.enabled();
         let mut replacement = Self::from_package(self.package.clone(), self.content_path.clone())?;
         replacement.unknown_hle_policy = policy;
         replacement.unknown_hle_allowlist = allowlist;
@@ -521,6 +538,8 @@ impl Runtime {
             .set_unknown_instruction_policy(instruction_policy);
         #[cfg(feature = "jit")]
         replacement.jit.set_enabled(jit_enabled);
+        #[cfg(feature = "wasm-jit")]
+        replacement.wasm_jit.set_enabled(wasm_jit_enabled);
         self.memory.copy_state_from(&replacement.memory);
         std::mem::swap(&mut replacement.memory, &mut self.memory);
         if was_running {
@@ -750,6 +769,8 @@ impl Runtime {
         self.active_framebuffer = state.active_framebuffer;
         self.framebuffer_bits = state.framebuffer_bits;
         self.console_output.clear();
+        #[cfg(feature = "wasm-jit")]
+        self.wasm_jit.clear();
         self.clear_instruction_cache();
         Ok(())
     }
@@ -816,6 +837,8 @@ impl Runtime {
         }
         #[cfg(feature = "jit")]
         self.jit.begin_slice();
+        #[cfg(feature = "wasm-jit")]
+        self.wasm_jit.begin_slice();
         super::cheats::apply(&self.cheats, &mut self.memory, &mut self.cpu);
         let profile = self.memory.profile();
         let mut frame_address = None;
@@ -840,7 +863,17 @@ impl Runtime {
             let guest_os_tick = self.guest_os_tick();
             let mut pending_delay_ticks = 0u32;
             let event = {
+                #[cfg(feature = "wasm-jit")]
+                let wasm_context = super::wasm_jit::SliceContext::bind(
+                    &mut self.memory,
+                    self.package.load_base(),
+                    self.package
+                        .load_base()
+                        .saturating_add(self.package.program_size()),
+                );
                 let mut bus = RuntimeBus {
+                    #[cfg(feature = "wasm-jit")]
+                    wasm_context,
                     memory: &mut self.memory,
                     package: &self.package,
                     imports: &self.package.imports,
@@ -897,6 +930,9 @@ impl Runtime {
                     let mut error_pc = self.cpu.r[15];
                     let remaining =
                         (INSTRUCTIONS_PER_SLICE - (self.cpu.instruction_count - initial)) as usize;
+                    #[cfg(feature = "wasm-jit")]
+                    let quantum_remaining =
+                        (quantum - (self.cpu.instruction_count - initial)) as usize;
                     if let Err(error) = bus.execute_cached_block(
                         &mut self.cpu,
                         remaining,
@@ -904,6 +940,10 @@ impl Runtime {
                         &mut error_pc,
                         #[cfg(feature = "jit")]
                         &mut self.jit,
+                        #[cfg(feature = "wasm-jit")]
+                        &mut self.wasm_jit,
+                        #[cfg(feature = "wasm-jit")]
+                        quantum_remaining,
                     ) {
                         return match error {
                             SimulatorError::MemoryError { .. }
@@ -1190,6 +1230,8 @@ fn idle_cpu() -> Cpu {
 }
 
 struct RuntimeBus<'a> {
+    #[cfg(feature = "wasm-jit")]
+    wasm_context: super::wasm_jit::SliceContext,
     memory: &'a mut Memory,
     package: &'a PackageImage,
     imports: &'a [crate::package::SymbolEntry],

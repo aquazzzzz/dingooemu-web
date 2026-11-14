@@ -114,6 +114,16 @@ impl Memory {
             ArmProfile::Homebrew => HOMEBREW_HEAP_BASE,
         }
     }
+    #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
+    pub(crate) fn wasm_jit_regions(&mut self) -> [u32; 4] {
+        [
+            self.system_ram.as_mut_ptr() as u32,
+            self.stack.as_mut_ptr() as u32,
+            self.heap.as_mut_ptr() as u32,
+            self.framebuffer.as_mut_ptr() as u32,
+        ]
+    }
+
     pub fn system_ram(&self) -> &[u8] {
         &self.system_ram
     }
@@ -165,26 +175,206 @@ impl Memory {
     }
 
     pub fn read8(&self, address: u32) -> Result<u8> {
-        Ok(self.read_bytes(address, 1)?[0])
+        Ok(self.fixed_read::<1>(address)?[0])
     }
     pub fn read16(&self, address: u32) -> Result<u16> {
-        Ok(u16::from_le_bytes(
-            self.read_bytes(address, 2)?.try_into().unwrap(),
-        ))
+        Ok(u16::from_le_bytes(self.fixed_read::<2>(address)?))
     }
     pub fn read32(&self, address: u32) -> Result<u32> {
-        Ok(u32::from_le_bytes(
-            self.read_bytes(address, 4)?.try_into().unwrap(),
-        ))
+        Ok(u32::from_le_bytes(self.fixed_read::<4>(address)?))
     }
     pub fn write8(&mut self, address: u32, value: u8) -> Result<()> {
-        self.write_bytes(address, &[value])
+        self.fixed_write(address, [value])
     }
     pub fn write16(&mut self, address: u32, value: u16) -> Result<()> {
-        self.write_bytes(address, &value.to_le_bytes())
+        self.fixed_write(address, value.to_le_bytes())
     }
     pub fn write32(&mut self, address: u32, value: u32) -> Result<()> {
-        self.write_bytes(address, &value.to_le_bytes())
+        self.fixed_write(address, value.to_le_bytes())
+    }
+
+    #[inline(always)]
+    fn fixed_read<const N: usize>(&self, address: u32) -> Result<[u8; N]> {
+        // Coarse address dispatch only; bounds and original fallback remain.
+        match address >> 24 {
+            0x10..=0x13 => {
+                if let Some(r) = region_range(address, N, SYSTEM_RAM_BASE, self.system_ram.len()) {
+                    return Ok(self.system_ram[r].try_into().unwrap());
+                }
+            }
+            0x1f => {
+                if let Some(r) = region_range(address, N, STACK_BASE, self.stack.len()) {
+                    return Ok(self.stack[r].try_into().unwrap());
+                }
+            }
+            0x21 | 0x22 if self.profile == ArmProfile::Retail => {
+                if let Some(r) = region_range(address, N, RETAIL_HEAP_BASE, self.heap.len()) {
+                    return Ok(self.heap[r].try_into().unwrap());
+                }
+            }
+            0x09 | 0x0a if self.profile == ArmProfile::Homebrew => {
+                // Preserve full-width MMIO precedence; an access straddling
+                // its end may still belong to the underlying heap, as before.
+                if region_range(
+                    address,
+                    N,
+                    LEGACY_SYSTEM_MMIO_BASE,
+                    self.legacy_system_mmio.len(),
+                )
+                .is_some()
+                {
+                    return self.fixed_read_linear::<N>(address);
+                }
+                if let Some(r) = region_range(address, N, HOMEBREW_HEAP_BASE, self.heap.len()) {
+                    return Ok(self.heap[r].try_into().unwrap());
+                }
+            }
+            0x80 => {
+                if let Some(r) = region_range(address, N, FRAMEBUFFER_BASE, self.framebuffer.len())
+                {
+                    return Ok(self.framebuffer[r].try_into().unwrap());
+                }
+            }
+            _ => {}
+        }
+        self.fixed_read_linear::<N>(address)
+    }
+
+    #[inline(always)]
+    fn fixed_read_linear<const N: usize>(&self, address: u32) -> Result<[u8; N]> {
+        if let Some(r) = region_range(address, N, 0, self.low_memory.len()) {
+            return Ok(self.low_memory[r].try_into().unwrap());
+        }
+        if let Some(r) = region_range(address, N, SYSTEM_RAM_BASE, self.system_ram.len()) {
+            return Ok(self.system_ram[r].try_into().unwrap());
+        }
+        if let Some(r) = region_range(address, N, STACK_BASE, self.stack.len()) {
+            return Ok(self.stack[r].try_into().unwrap());
+        }
+        if let Some(r) = region_range(
+            address,
+            N,
+            LEGACY_SYSTEM_MMIO_BASE,
+            self.legacy_system_mmio.len(),
+        ) {
+            return Ok(self.legacy_system_mmio[r].try_into().unwrap());
+        }
+        if let Some(r) = region_range(address, N, self.heap_base(), self.heap.len()) {
+            return Ok(self.heap[r].try_into().unwrap());
+        }
+        if let Some(r) = region_range(address, N, FRAMEBUFFER_BASE, self.framebuffer.len()) {
+            return Ok(self.framebuffer[r].try_into().unwrap());
+        }
+        if let Some(r) = region_range(address, N, LEGACY_MMIO_BASE, self.legacy_mmio.len()) {
+            return Ok(self.legacy_mmio[r].try_into().unwrap());
+        }
+        if let Some(r) = region_range(
+            address,
+            N,
+            LEGACY_AUDIO_MMIO_BASE,
+            self.legacy_audio_mmio.len(),
+        ) {
+            return Ok(self.legacy_audio_mmio[r].try_into().unwrap());
+        }
+        Err(memory_error(address, N))
+    }
+    #[inline(always)]
+    fn fixed_write<const N: usize>(&mut self, address: u32, value: [u8; N]) -> Result<()> {
+        // Coarse address dispatch only; bounds and original fallback remain.
+        match address >> 24 {
+            0x10..=0x13 => {
+                if let Some(r) = region_range(address, N, SYSTEM_RAM_BASE, self.system_ram.len()) {
+                    self.system_ram[r].copy_from_slice(&value);
+                    return Ok(());
+                }
+            }
+            0x1f => {
+                if let Some(r) = region_range(address, N, STACK_BASE, self.stack.len()) {
+                    self.stack[r].copy_from_slice(&value);
+                    return Ok(());
+                }
+            }
+            0x21 | 0x22 if self.profile == ArmProfile::Retail => {
+                if let Some(r) = region_range(address, N, RETAIL_HEAP_BASE, self.heap.len()) {
+                    self.heap[r].copy_from_slice(&value);
+                    return Ok(());
+                }
+            }
+            0x09 | 0x0a if self.profile == ArmProfile::Homebrew => {
+                // Preserve full-width MMIO precedence; an access straddling
+                // its end may still belong to the underlying heap, as before.
+                if region_range(
+                    address,
+                    N,
+                    LEGACY_SYSTEM_MMIO_BASE,
+                    self.legacy_system_mmio.len(),
+                )
+                .is_some()
+                {
+                    return self.fixed_write_linear(address, value);
+                }
+                if let Some(r) = region_range(address, N, HOMEBREW_HEAP_BASE, self.heap.len()) {
+                    self.heap[r].copy_from_slice(&value);
+                    return Ok(());
+                }
+            }
+            0x80 => {
+                if let Some(r) = region_range(address, N, FRAMEBUFFER_BASE, self.framebuffer.len())
+                {
+                    self.framebuffer[r].copy_from_slice(&value);
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+        self.fixed_write_linear(address, value)
+    }
+
+    #[inline(always)]
+    fn fixed_write_linear<const N: usize>(&mut self, address: u32, value: [u8; N]) -> Result<()> {
+        if let Some(r) = region_range(address, N, 0, self.low_memory.len()) {
+            self.low_memory[r].copy_from_slice(&value);
+            return Ok(());
+        }
+        if let Some(r) = region_range(address, N, SYSTEM_RAM_BASE, self.system_ram.len()) {
+            self.system_ram[r].copy_from_slice(&value);
+            return Ok(());
+        }
+        if let Some(r) = region_range(address, N, STACK_BASE, self.stack.len()) {
+            self.stack[r].copy_from_slice(&value);
+            return Ok(());
+        }
+        if let Some(r) = region_range(
+            address,
+            N,
+            LEGACY_SYSTEM_MMIO_BASE,
+            self.legacy_system_mmio.len(),
+        ) {
+            self.legacy_system_mmio[r].copy_from_slice(&value);
+            return Ok(());
+        }
+        if let Some(r) = region_range(address, N, self.heap_base(), self.heap.len()) {
+            self.heap[r].copy_from_slice(&value);
+            return Ok(());
+        }
+        if let Some(r) = region_range(address, N, FRAMEBUFFER_BASE, self.framebuffer.len()) {
+            self.framebuffer[r].copy_from_slice(&value);
+            return Ok(());
+        }
+        if let Some(r) = region_range(address, N, LEGACY_MMIO_BASE, self.legacy_mmio.len()) {
+            self.legacy_mmio[r].copy_from_slice(&value);
+            return Ok(());
+        }
+        if let Some(r) = region_range(
+            address,
+            N,
+            LEGACY_AUDIO_MMIO_BASE,
+            self.legacy_audio_mmio.len(),
+        ) {
+            self.legacy_audio_mmio[r].copy_from_slice(&value);
+            return Ok(());
+        }
+        Err(memory_error(address, N))
     }
 
     pub fn read_bytes(&self, address: u32, size: usize) -> Result<&[u8]> {
@@ -224,6 +414,54 @@ impl Memory {
             return Ok(&self.legacy_audio_mmio[range]);
         }
         Err(memory_error(address, size))
+    }
+
+    #[cfg(feature = "wasm-jit")]
+    #[inline(always)]
+    pub(crate) fn code_matches(&self, address: u32, expected: &[u8]) -> bool {
+        let size = expected.len();
+        if let Some(range) = region_range(address, size, 0, self.low_memory.len()) {
+            return super::wasm_jit::code_guard::equal_code(&self.low_memory[range], expected);
+        }
+        if let Some(range) = region_range(address, size, SYSTEM_RAM_BASE, self.system_ram.len()) {
+            return super::wasm_jit::code_guard::equal_code(&self.system_ram[range], expected);
+        }
+        if let Some(range) = region_range(address, size, STACK_BASE, self.stack.len()) {
+            return super::wasm_jit::code_guard::equal_code(&self.stack[range], expected);
+        }
+        // Device registers take precedence over the overlapping homebrew heap.
+        if let Some(range) = region_range(
+            address,
+            size,
+            LEGACY_SYSTEM_MMIO_BASE,
+            self.legacy_system_mmio.len(),
+        ) {
+            return super::wasm_jit::code_guard::equal_code(
+                &self.legacy_system_mmio[range],
+                expected,
+            );
+        }
+        if let Some(range) = region_range(address, size, self.heap_base(), self.heap.len()) {
+            return super::wasm_jit::code_guard::equal_code(&self.heap[range], expected);
+        }
+        if let Some(range) = region_range(address, size, FRAMEBUFFER_BASE, self.framebuffer.len()) {
+            return super::wasm_jit::code_guard::equal_code(&self.framebuffer[range], expected);
+        }
+        if let Some(range) = region_range(address, size, LEGACY_MMIO_BASE, self.legacy_mmio.len()) {
+            return super::wasm_jit::code_guard::equal_code(&self.legacy_mmio[range], expected);
+        }
+        if let Some(range) = region_range(
+            address,
+            size,
+            LEGACY_AUDIO_MMIO_BASE,
+            self.legacy_audio_mmio.len(),
+        ) {
+            return super::wasm_jit::code_guard::equal_code(
+                &self.legacy_audio_mmio[range],
+                expected,
+            );
+        }
+        false
     }
 
     pub fn write_bytes(&mut self, address: u32, data: &[u8]) -> Result<()> {
@@ -443,4 +681,151 @@ mod tests {
             Err(SimulatorError::InvalidPackageFormat(_))
         ));
     }
+    #[test]
+    fn generic_fixed_width_matches_all_mapping_edges() {
+        for profile in [ArmProfile::Retail, ArmProfile::Homebrew] {
+            let mut a = Memory::from_package(&package(profile)).unwrap();
+            let mut b = a.clone();
+            let bases = [
+                0,
+                SYSTEM_RAM_BASE,
+                STACK_BASE,
+                a.heap_base(),
+                FRAMEBUFFER_BASE,
+                LEGACY_MMIO_BASE,
+                LEGACY_AUDIO_MMIO_BASE,
+                LEGACY_SYSTEM_MMIO_BASE,
+            ];
+            let sizes = [
+                LEGACY_LOW_MEMORY_SIZE,
+                SYSTEM_RAM_SIZE,
+                STACK_SIZE,
+                HEAP_SIZE,
+                FRAMEBUFFER_SIZE,
+                LEGACY_MMIO_SIZE,
+                LEGACY_AUDIO_MMIO_SIZE,
+                LEGACY_SYSTEM_MMIO_SIZE,
+            ];
+            for (base, size) in bases.into_iter().zip(sizes) {
+                for delta in [
+                    0,
+                    1,
+                    2,
+                    3,
+                    4,
+                    15,
+                    size - 4,
+                    size - 3,
+                    size - 2,
+                    size - 1,
+                    size,
+                    size + 1,
+                ] {
+                    let address = base.wrapping_add(delta as u32);
+                    let x = (
+                        a.read_bytes(address, 1).map(|x| x[0]).ok(),
+                        a.read_bytes(address, 2)
+                            .map(|x| u16::from_le_bytes(x.try_into().unwrap()))
+                            .ok(),
+                        a.read_bytes(address, 4)
+                            .map(|x| u32::from_le_bytes(x.try_into().unwrap()))
+                            .ok(),
+                    );
+                    let wx = (
+                        a.write_bytes(address, &[0x71]).is_ok(),
+                        a.write_bytes(address, &0x1234u16.to_le_bytes()).is_ok(),
+                        a.write_bytes(address, &0xabcdef01u32.to_le_bytes()).is_ok(),
+                    );
+                    let y = (
+                        b.read8(address).ok(),
+                        b.read16(address).ok(),
+                        b.read32(address).ok(),
+                    );
+                    let wy = (
+                        b.write8(address, 0x71).is_ok(),
+                        b.write16(address, 0x1234).is_ok(),
+                        b.write32(address, 0xabcdef01).is_ok(),
+                    );
+                    assert_eq!(x, y);
+                    assert_eq!(wx, wy);
+                }
+            }
+            for address in [
+                u32::MAX,
+                u32::MAX - 1,
+                u32::MAX - 2,
+                LEGACY_GRAPHICS_SURFACE,
+            ] {
+                let x = a
+                    .read_bytes(address, 4)
+                    .map(|x| u32::from_le_bytes(x.try_into().unwrap()))
+                    .ok();
+                assert_eq!(x, b.read32(address).ok());
+            }
+            assert_eq!(a.system_ram, b.system_ram);
+            assert_eq!(a.stack, b.stack);
+            assert_eq!(a.heap, b.heap);
+            assert_eq!(a.framebuffer, b.framebuffer);
+            assert_eq!(a.low_memory, b.low_memory);
+            assert_eq!(a.legacy_mmio, b.legacy_mmio);
+            assert_eq!(a.legacy_audio_mmio, b.legacy_audio_mmio);
+            assert_eq!(a.legacy_system_mmio, b.legacy_system_mmio);
+        }
+    }
 }
+
+#[cfg(all(test, feature = "wasm-jit"))]
+mod code_match_tests {
+    use super::*;
+    #[test]
+    fn matches_original_mapping_ranges_and_every_byte() {
+        for profile in [ArmProfile::Retail, ArmProfile::Homebrew] {
+            let m = Memory {
+                profile,
+                system_ram: vec![0; SYSTEM_RAM_SIZE],
+                stack: vec![0; STACK_SIZE],
+                heap: vec![0; HEAP_SIZE],
+                framebuffer: vec![0; FRAMEBUFFER_SIZE],
+                low_memory: vec![0; LEGACY_LOW_MEMORY_SIZE],
+                legacy_mmio: vec![0; LEGACY_MMIO_SIZE],
+                legacy_audio_mmio: vec![0; LEGACY_AUDIO_MMIO_SIZE],
+                legacy_system_mmio: vec![0; LEGACY_SYSTEM_MMIO_SIZE],
+            };
+            for base in [
+                0,
+                SYSTEM_RAM_BASE,
+                STACK_BASE,
+                LEGACY_SYSTEM_MMIO_BASE,
+                m.heap_base(),
+                FRAMEBUFFER_BASE,
+                LEGACY_MMIO_BASE,
+                LEGACY_AUDIO_MMIO_BASE,
+                u32::MAX,
+            ] {
+                for offset in [0, 1, 3, 7, 4095, 4096, 65535, u32::MAX] {
+                    let address = base.wrapping_add(offset);
+                    for n in [0, 1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 64, 260] {
+                        let expected = vec![0; n];
+                        assert_eq!(
+                            m.code_matches(address, &expected),
+                            m.read_bytes(address, n).is_ok_and(|a| a == expected)
+                        );
+                        if let Ok(bytes) = m.read_bytes(address, n) {
+                            let mut exact = bytes.to_vec();
+                            assert!(m.code_matches(address, &exact));
+                            for at in 0..n {
+                                exact[at] ^= 1;
+                                assert!(!m.code_matches(address, &exact));
+                                exact[at] ^= 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../../../scripts/tests/a330-region-index-native.rs"]
+mod region_index_tests;

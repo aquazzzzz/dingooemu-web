@@ -693,7 +693,11 @@ impl Runtime {
 
         // Capture only after the new snapshot has passed all validation.
         #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
-        let seed = if _prewarm { self.wasm_jit.readback_seed() } else { Vec::new() };
+        let seed = if _prewarm {
+            self.wasm_jit.readback_seed()
+        } else {
+            Vec::new()
+        };
         #[cfg(feature = "standalone")]
         let host_audio_output_enabled = self.audio.host_output_enabled();
         self.cpu = state.cpu;
@@ -723,8 +727,10 @@ impl Runtime {
         self.clear_instruction_cache();
         #[cfg(all(feature = "wasm-jit", target_os = "emscripten"))]
         if _prewarm {
-            let valid = seed.into_iter().filter(|(pc, code)|
-                !self.readback_crosses_boundary(*pc, code.len())).collect();
+            let valid = seed
+                .into_iter()
+                .filter(|(pc, code)| !self.readback_crosses_boundary(*pc, code.len()))
+                .collect();
             self.wasm_jit.precompile_readback(&self.memory, valid);
         }
         Ok(())
@@ -2363,23 +2369,27 @@ impl Default for Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature="wasm-jit")]
+    #[cfg(feature = "wasm-jit")]
     #[test]
     fn readback_current_hook_and_special_boundaries() {
-        let mut runtime=Runtime::default();let pc=0x1000;
-        assert!(!runtime.readback_crosses_boundary(pc,16));
-        let hook=pc+4;let (word,mask)=hook_filter_location(hook);
-        runtime.hooked_addrs.insert(hook,"OSTimeGet".to_owned());runtime.hook_filter[word]|=mask;
-        assert!(runtime.readback_crosses_boundary(pc,16));
-        runtime.hooked_addrs.remove(&hook);runtime.hook_filter[word]&=!mask;
-        assert!(!runtime.readback_crosses_boundary(pc,16));
-        runtime.app_main_entry=Some(pc+8);assert!(runtime.readback_crosses_boundary(pc,16));
-        runtime.app_main_entry=None;runtime.app_main_init_check_address=Some(pc+12);
-        assert!(runtime.readback_crosses_boundary(pc,16));
-        assert!(runtime.readback_crosses_boundary(TASK_RETURN_ADDRESS-4,16));
+        let mut runtime = Runtime::default();
+        let pc = 0x1000;
+        assert!(!runtime.readback_crosses_boundary(pc, 16));
+        let hook = pc + 4;
+        let (word, mask) = hook_filter_location(hook);
+        runtime.hooked_addrs.insert(hook, "OSTimeGet".to_owned());
+        runtime.hook_filter[word] |= mask;
+        assert!(runtime.readback_crosses_boundary(pc, 16));
+        runtime.hooked_addrs.remove(&hook);
+        runtime.hook_filter[word] &= !mask;
+        assert!(!runtime.readback_crosses_boundary(pc, 16));
+        runtime.app_main_entry = Some(pc + 8);
+        assert!(runtime.readback_crosses_boundary(pc, 16));
+        runtime.app_main_entry = None;
+        runtime.app_main_init_check_address = Some(pc + 12);
+        assert!(runtime.readback_crosses_boundary(pc, 16));
+        assert!(runtime.readback_crosses_boundary(TASK_RETURN_ADDRESS - 4, 16));
     }
-
-
 
     /// Invoked by the JS game runner. Normalize every unordered map using the
     /// original Rust types; do not ignore scheduler/file/GUI differences.

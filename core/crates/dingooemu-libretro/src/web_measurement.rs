@@ -78,7 +78,7 @@ impl Measurement {
                 1 | 2 | 3 | 12 => Some(sample.tick_ms),
                 4 | 13 => Some(sample.video_ms),
                 5 | 14 => Some(sample.audio_ms),
-                6 | 7 | 8 => sample.interval_ms,
+                6..=8 => sample.interval_ms,
                 _ => None,
             })
             .collect();

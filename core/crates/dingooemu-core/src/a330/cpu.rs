@@ -30,6 +30,9 @@ pub(crate) enum ArmInstructionKind {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DecodedArmInstruction {
     pub(crate) instruction: u32,
+    // Pure instruction constant: ALU rotated immediate, or signed scalar offset.
+    // No register, memory, flag or PC value is captured here.
+    pub(crate) static_operand: u32,
     pub(crate) kind: ArmInstructionKind,
     pub(crate) may_exit_block: bool,
 }
@@ -37,8 +40,23 @@ pub(crate) struct DecodedArmInstruction {
 impl DecodedArmInstruction {
     pub(crate) fn decode(instruction: u32) -> Self {
         let kind = decode_arm_instruction(instruction);
+        let static_operand = match kind {
+            ArmInstructionKind::DataProcessing if instruction & (1 << 25) != 0 => {
+                (instruction & 0xff).rotate_right(((instruction >> 8) & 15) * 2)
+            }
+            ArmInstructionKind::SingleTransfer if instruction & (1 << 25) == 0 => {
+                let offset = instruction & 0xfff;
+                if instruction & (1 << 23) != 0 {
+                    offset
+                } else {
+                    0u32.wrapping_sub(offset)
+                }
+            }
+            _ => 0,
+        };
         Self {
             instruction,
+            static_operand,
             kind,
             may_exit_block: arm_instruction_may_exit_block(instruction, kind),
         }
@@ -205,7 +223,7 @@ impl Cpu {
     ) -> Result<()> {
         let instruction = decoded.instruction;
         let condition = instruction >> 28;
-        if condition != 0xf && !self.condition_passed(condition) {
+        if condition < 14 && !self.condition_passed(condition) {
             return Ok(());
         }
         match decoded.kind {
@@ -240,9 +258,11 @@ impl Cpu {
             ArmInstructionKind::Multiply => self.execute_multiply(instruction, pc),
             ArmInstructionKind::LongMultiply => self.execute_long_multiply(instruction, pc),
             ArmInstructionKind::HalfTransfer => self.execute_half_transfer(instruction, pc, bus),
-            ArmInstructionKind::DataProcessing => self.execute_data_processing(instruction, pc),
+            ArmInstructionKind::DataProcessing => {
+                self.execute_data_processing(instruction, decoded.static_operand, pc)
+            }
             ArmInstructionKind::SingleTransfer => {
-                self.execute_single_transfer(instruction, pc, bus)
+                self.execute_single_transfer(instruction, decoded.static_operand, pc, bus)
             }
             ArmInstructionKind::BlockTransfer => self.execute_block_transfer(instruction, pc, bus),
             ArmInstructionKind::Branch => self.execute_branch(instruction, pc),
@@ -254,12 +274,40 @@ impl Cpu {
         }
     }
 
-    fn execute_data_processing(&mut self, instruction: u32, pc: u32) -> Result<()> {
+    fn execute_data_processing(
+        &mut self,
+        instruction: u32,
+        static_operand: u32,
+        pc: u32,
+    ) -> Result<()> {
         let opcode = (instruction >> 21) & 0xf;
         let set_flags = instruction & (1 << 20) != 0;
         let rn = ((instruction >> 16) & 0xf) as usize;
         let rd = ((instruction >> 12) & 0xf) as usize;
         let left = self.read_reg(rn, pc, false);
+        // S=0 data processing does not consume shifter carry or arithmetic
+        // carry/overflow outputs. ADC/SBC/RSC and immediate RRX still read C.
+        if !set_flags && !matches!(opcode, 8..=11) {
+            let right = self.decode_operand2_value(instruction, static_operand, pc);
+            let carry = u32::from(self.cpsr & C != 0);
+            let result = match opcode {
+                0 => left & right,
+                1 => left ^ right,
+                2 => left.wrapping_sub(right),
+                3 => right.wrapping_sub(left),
+                4 => left.wrapping_add(right),
+                5 => left.wrapping_add(right).wrapping_add(carry),
+                6 => left.wrapping_sub(right).wrapping_sub(1 - carry),
+                7 => right.wrapping_sub(left).wrapping_sub(1 - carry),
+                12 => left | right,
+                13 => right,
+                14 => left & !right,
+                15 => !right,
+                _ => unreachable!(),
+            };
+            self.write_reg(rd, result);
+            return Ok(());
+        }
         let (right, shifter_carry) = self.decode_operand2(instruction, pc);
         let carry = u32::from(self.cpsr & C != 0);
         let (result, carry_out, overflow) = match opcode {
@@ -346,6 +394,33 @@ impl Cpu {
         Ok(())
     }
 
+    fn decode_operand2_value(&self, instruction: u32, static_operand: u32, pc: u32) -> u32 {
+        if instruction & (1 << 25) != 0 {
+            return static_operand;
+        }
+        let value = self.read_reg((instruction & 0xf) as usize, pc, false);
+        let immediate = instruction & (1 << 4) == 0;
+        let amount = if immediate {
+            (instruction >> 7) & 0x1f
+        } else {
+            self.read_reg(((instruction >> 8) & 0xf) as usize, pc, false) & 0xff
+        };
+        match ((instruction >> 5) & 3, amount) {
+            (0, 0..=31) => value << amount,
+            (0, _) => 0,
+            (1, 0) if immediate => 0,
+            (1, 0) => value,
+            (1, 1..=31) => value >> amount,
+            (1, _) => 0,
+            (2, 0) if !immediate => value,
+            (2, 0 | 32..=u32::MAX) => (value as i32 >> 31) as u32,
+            (2, _) => (value as i32 >> amount) as u32,
+            (3, 0) if immediate => (u32::from(self.cpsr & C != 0) << 31) | (value >> 1),
+            (3, _) => value.rotate_right(amount & 31),
+            _ => unreachable!(),
+        }
+    }
+
     fn decode_operand2(&self, instruction: u32, pc: u32) -> (u32, bool) {
         if instruction & (1 << 25) != 0 {
             let value = instruction & 0xff;
@@ -430,24 +505,25 @@ impl Cpu {
     fn execute_single_transfer<B: Bus>(
         &mut self,
         instruction: u32,
+        static_operand: u32,
         pc: u32,
         bus: &mut B,
     ) -> Result<()> {
         let rn = ((instruction >> 16) & 0xf) as usize;
         let rd = ((instruction >> 12) & 0xf) as usize;
         let base = self.read_reg(rn, pc, false);
-        let offset = if instruction & (1 << 25) == 0 {
-            instruction & 0xfff
+        let adjusted = if instruction & (1 << 25) == 0 {
+            base.wrapping_add(static_operand)
         } else {
             let rm = self.read_reg((instruction & 0xf) as usize, pc, false);
             let kind = (instruction >> 5) & 3;
             let amount = (instruction >> 7) & 0x1f;
-            shift(rm, kind, amount, self.cpsr & C != 0, true).0
-        };
-        let adjusted = if instruction & (1 << 23) != 0 {
-            base.wrapping_add(offset)
-        } else {
-            base.wrapping_sub(offset)
+            let offset = shift(rm, kind, amount, self.cpsr & C != 0, true).0;
+            if instruction & (1 << 23) != 0 {
+                base.wrapping_add(offset)
+            } else {
+                base.wrapping_sub(offset)
+            }
         };
         let pre = instruction & (1 << 24) != 0;
         let address = if pre { adjusted } else { base };

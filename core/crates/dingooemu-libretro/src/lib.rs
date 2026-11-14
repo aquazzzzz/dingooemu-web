@@ -6,6 +6,7 @@
 
 mod api;
 mod audio_output;
+mod audio_supply;
 mod callbacks;
 mod constants;
 mod diagnostics;

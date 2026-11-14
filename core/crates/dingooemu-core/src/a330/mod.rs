@@ -5,3 +5,6 @@ mod firmware_archive;
 mod jit;
 pub mod memory;
 pub(crate) mod runtime;
+
+#[cfg(feature = "wasm-jit")]
+mod wasm_jit;

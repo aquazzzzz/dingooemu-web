@@ -351,6 +351,21 @@ impl Audio {
         true
     }
 
+    /// Transfer only PCM that the guest has produced. The host chooses a
+    /// bounded amount from its playback queue demand; no silence is fabricated.
+    pub fn take_queued_samples(&mut self, maximum_frames: usize) -> Vec<i16> {
+        #[cfg(feature = "standalone")]
+        {
+            let _ = maximum_frames;
+            Vec::new()
+        }
+        #[cfg(not(feature = "standalone"))]
+        {
+            let samples = maximum_frames.min(self.pending_samples.len() / 2) * 2;
+            self.pending_samples.drain(..samples).collect()
+        }
+    }
+
     pub fn take_frame_samples(&mut self) -> Vec<i16> {
         #[cfg(feature = "standalone")]
         {
@@ -602,5 +617,35 @@ mod tests {
             frame_counts.iter().sum::<usize>(),
             OUTPUT_SAMPLE_RATE as usize
         );
+    }
+    #[cfg(not(feature = "standalone"))]
+    #[test]
+    fn demand_transfer_is_lossless_across_partitions_and_never_pads() {
+        let mut audio = Audio::new();
+        let expected: Vec<i16> = (0..10_000).map(|i| (i * 37) as i16).collect();
+        audio.pending_samples.extend(expected.iter().copied());
+        let mut actual = Vec::new();
+        for frames in [0, 1, 367, 0, 705, 1_411, 8, usize::MAX] {
+            let before = audio.pending_samples.len();
+            let part = audio.take_queued_samples(frames);
+            assert_eq!(part.len(), frames.min(before / 2) * 2);
+            actual.extend(part);
+        }
+        assert_eq!(actual, expected);
+        assert!(audio.take_queued_samples(1_411).is_empty());
+        assert_eq!(audio.output_frame_remainder, 0);
+    }
+
+    #[cfg(not(feature = "standalone"))]
+    #[test]
+    fn demand_transfer_releases_only_consumed_guest_backpressure() {
+        let mut audio = Audio::new();
+        assert!(audio.open(AudioConfig::new(22_050, 16, 2, 100).unwrap()));
+        assert!(audio.write(&10_000i16.to_le_bytes().repeat(2048 * 2)));
+        assert!(!audio.can_write());
+        audio.take_queued_samples(0);
+        assert!(!audio.can_write());
+        audio.take_queued_samples(800);
+        assert!(audio.can_write());
     }
 }

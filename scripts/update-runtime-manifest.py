@@ -74,9 +74,88 @@ def main():
         "audio_refresh_wait": {
             "reserve_core_frames": 2,
             "maximum_ms": 100,
-            "active_output": "Limit Worker refresh wait to queued audio minus two nominal core frames",
+            "active_output": "A330 Worker AW64 bypasses positive refresh wait; other paths retain queued audio minus two nominal frames",
             "inactive_output": "Retain existing 100 ms refresh wait for paused, suspended, nonblocking or unavailable output",
             "validation": "See docs/wasm-refresh-audio-budget.md; shared-memory JIT-on A-H ABBA and 5-minute D/H stability runs"
+        },
+        "a330_wasm_jit": {
+            "enabled_by_default": True,
+            "scope": "ARM integer, shifts/NZCV, multiply, long multiply, CLZ, guarded single transfers and B/BL",
+            "fallback": "Interpreter for Thumb, unsupported instructions, device access, program-image stores and compilation failure",
+            "limits": {"entries": 2048, "requests": 320, "generated_bytes": 1048576},
+            "validation": "docs/wasm-a330-jit.md; five complete-state comparisons, 20 browser ABBA samples, 300-second stability",
+            "game_specific_folds": {
+                "enabled": False,
+                "reason": "Removed at user request on 2026-10-24; generic ARM JIT remains",
+                "validation": "docs/wasm-a330-time-conversion.md"
+            },
+            "generic_short_code_guard": {
+                "scalar_lengths_bytes": [8, 12, 16, 20, 24, 28],
+                "protection": "Every byte compared at existing admission/execution guards; longer lengths use complete bounded-group comparison with a full remainder",
+                "validation": "docs/wasm-a330-guard-width-install.md, docs/wasm-a330-guard-20-28-acceptance.md, docs/wasm-a330-guard-20-28-install.md"
+            },
+            "generic_long_code_guard": {
+                "enabled": True, "minimum_bytes": 32, "group_bytes": 32,
+                "protection": "Complete byte comparison in bounded groups and full remainder on every admission/execution; no generation-only shortcut",
+                "validation": "docs/wasm-a330-long-guard-acceptance.md, docs/wasm-a330-long-guard-install.md"
+            },
+            "bounded_extra_jit": {
+                "enabled": True, "base_identities": 256, "extra_requests": 64,
+                "minimum_extra_instructions": 8, "normal_quantum_only": True,
+                "default_activation": "Natural from reset after the first256 identities; session320, A320 default256 unchanged",
+                "protection": "Extra generated prefix resumes its original decoded suffix in the same call, preserving all original returns, input/quantum boundaries and full code checks",
+                "validation": "docs/wasm-a330-long-guard-acceptance.md, docs/wasm-a330-long-guard-install.md"
+            },
+            "direct_cpu_arguments": {
+                "enabled": True, "a330_parameters": 4, "a320_parameters": 2,
+                "lifetime": "Current exclusive CPU borrow supplies register and CPSR addresses at every block call; no cached CPU pointers",
+                "protection": "Complete byte validation, guarded memory access and all original execution boundaries retained",
+                "validation": "docs/wasm-a330-jit-call-acceptance.md, docs/wasm-a330-jit-call-install.md"
+            },
+            "code_match_interface": {
+                "enabled": True,
+                "protection": "Original eight-region priority and complete-byte comparison at both JIT guards",
+                "validation": "docs/wasm-a330-code-match-acceptance.md, docs/wasm-a330-code-match-install.md"
+            },
+            "fixed_width_memory": {
+                "widths_bytes": [1, 2, 4],
+                "semantics": "Original mapping priority, overlap, unaligned access, range/overflow and failure behavior",
+                "validation": "docs/wasm-a330-guard-width-install.md"
+            },
+            "slice_context": {
+                "enabled": True,
+                "scope": "Owning-thread RuntimeBus segment; 8 invariant fields reused; current CPU pointers passed directly each block; SVC rebind",
+                "validation": "docs/wasm-a330-start-acceptance.md, docs/wasm-a330-combo-install.md"
+            },
+            "elapsed_audio": {
+                "scope": "A330 ready Worker AudioWorklet64 only",
+                "sample_rate": 22050, "maximum_credit_ms": 64, "maximum_batch_frames": 1411,
+                "long_gap_rebase_ms": 250, "initial_credit": 0,
+                "debit": "Only actual queued PCM; reset on content/restore/reset/output discontinuity; guest clock unchanged",
+                "validation": "docs/wasm-a330-start-acceptance.md, docs/wasm-a330-combo-install.md"
+            },
+            "interpreter_condition_flags_fast_path": {
+                "enabled": True,
+                "scope": "Generic ARM AL/NV condition bypass and value-only S=0 non-test ALU operands/results",
+                "semantics": "Preserve C inputs, S=1/test flags, shift boundaries, PC access, guest clock and input/quantum boundaries",
+                "validation": "docs/wasm-a330-alu-fast-acceptance.md, docs/wasm-a330-alu-fast-install.md"
+            },
+            "decoded_cache_entry_range_hoist": {
+                "enabled": True,
+                "protection": "Immutable code range metadata reused per existing cache entry; complete byte guard and original execution boundaries retained",
+                "validation": "docs/wasm-a330-region-stack-retest.md, docs/wasm-a330-region-stack-install.md"
+            },
+            "static_operand_predecode": {
+                "enabled": True, "record_bytes": 12, "extra_capacity_bytes": 1048576,
+                "protection": "Static ARM operand fields only; runtime register/flags/PC/shift semantics and complete invalidation retained",
+                "validation": "docs/wasm-a330-region-stack-retest.md, docs/wasm-a330-region-stack-install.md"
+            },
+            "fixed_width_region_dispatch": {
+                "enabled": True, "widths_bytes": [1, 2, 4],
+                "protection": "Coarse address/profile dispatch with full-width bounds, MMIO priority and original linear fallback",
+                "validation": "docs/wasm-a330-region-stack-retest.md, docs/wasm-a330-region-stack-install.md"
+            },
+            "continuous_execution_enabled": False
         },
         "experimental_wasm_jit": {
             "abi": 4, "enabled_by_default": True,
@@ -85,7 +164,9 @@ def main():
             "validation": "See docs/wasm-jit-generated-guards.md for current shared/JIT-on full-code guards in generated RAM blocks, A-H complete-state/core screen, 32 browser ABBA samples and 5-minute H stability; docs/wasm-jit-fast-fallback.md for retained fallback optimization; docs/wasm-jit-hilo.md for HI/LO semantics and JIT-off tradeoff; docs/wasm-jit-ui.md for live-switch checks; docs/wasm-jit-framebuffer-install.md and docs/wasm-jit-framebuffer.md for prior adoption and measurements"
         }
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    content = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+    manifest_path.write_text(content)
+    (public / "runtime-manifest.json").write_text(content)
 
 
 if __name__ == "__main__":

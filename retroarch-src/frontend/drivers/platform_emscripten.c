@@ -101,6 +101,17 @@ void PlatformEmscriptenSetWakeLock(bool state);
 void PlatformEmscriptenGetSystemInfo(unsigned *browser, unsigned *os);
 void PlatformEmscriptenFree(void);
 
+/* Only the validated owning-thread A330 Worker + AW64 path uses elapsed PCM. */
+double dingoo_audio_output_queue_ms(void)
+{
+#if defined(DINGOO_CORE_WORKER) && defined(HAVE_AUDIOWORKLET)
+   extern double audioworklet_sync_queue_ms(void);
+   if (config_get_ptr()->uints.audio_latency == 64)
+      return audioworklet_sync_queue_ms();
+#endif
+   return -1.0;
+}
+
 typedef struct
 {
 #ifdef PROXY_TO_PTHREAD
@@ -739,18 +750,16 @@ static void set_raf_interval(void *data)
 extern double audioworklet_sync_queue_ms(void);
 static int64_t dingoo_worker_refresh_wait_ns(void)
 {
+   extern bool dingooemu_a330_content(void);
    double queue_ms = audioworklet_sync_queue_ms();
-   double fps      = video_state_get_ptr()->av_info.timing.fps;
-   double reserve  = fps > 0.0 ? 2000.0 / fps : 2000.0 / 60.0;
+   double fps = video_state_get_ptr()->av_info.timing.fps;
+   double reserve = fps > 0.0 ? 2000.0 / fps : 2000.0 / 60.0;
    double wait_ms;
-   if (queue_ms < 0.0)
-      return 100000000LL;
-   /* Audio already paces the core. A late display refresh must not consume
-    * the entire output queue before the next frame can supply audio.
-    * Reserve two nominal core frames, including their scheduling margin. */
-   wait_ms = queue_ms - reserve;
-   if (wait_ms <= 0.0)
+   if (queue_ms < 0.0) return 100000000LL;
+   if (config_get_ptr()->uints.audio_latency == 64 && dingooemu_a330_content())
       return 0;
+   wait_ms = queue_ms - reserve;
+   if (wait_ms <= 0.0) return 0;
    return wait_ms < 100.0 ? (int64_t)(wait_ms * 1000000.0) : 100000000LL;
 }
 #endif

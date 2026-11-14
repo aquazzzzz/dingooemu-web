@@ -92,6 +92,8 @@ impl RuntimeBus<'_> {
         previous_pc: &mut u32,
         error_pc: &mut u32,
         #[cfg(feature = "jit")] jit: &mut JitEngine,
+        #[cfg(feature = "wasm-jit")] wasm_jit: &mut crate::a330::wasm_jit::Engine,
+        #[cfg(feature = "wasm-jit")] quantum_remaining: usize,
     ) -> Result<usize> {
         if cpu.execution_state() != ExecutionState::Arm {
             *error_pc = cpu.r[15];
@@ -101,23 +103,25 @@ impl RuntimeBus<'_> {
         }
 
         let address = cpu.r[15];
-        let Some(offset) = address.checked_sub(self.package.load_base()) else {
-            *error_pc = address;
-            cpu.step(self)?;
-            *previous_pc = address;
-            return Ok(1);
-        };
-        if offset & 3 != 0 || offset >= self.package.program_size() {
-            *error_pc = address;
-            cpu.step(self)?;
-            *previous_pc = address;
-            return Ok(1);
-        }
-
         let cache_index = instruction_block_cache_index(address);
         if self.instruction_blocks[cache_index].len == 0
             || self.instruction_blocks[cache_index].start != address
         {
+            // Entries are created only for aligned addresses inside this immutable
+            // package. Reset/restore and code invalidation clear their length.
+            let Some(offset) = address.checked_sub(self.package.load_base()) else {
+                *error_pc = address;
+                cpu.step(self)?;
+                *previous_pc = address;
+                return Ok(1);
+            };
+            if offset & 3 != 0 || offset >= self.package.program_size() {
+                *error_pc = address;
+                cpu.step(self)?;
+                *previous_pc = address;
+                return Ok(1);
+            }
+
             let program_end = self
                 .package
                 .load_base()
@@ -135,14 +139,67 @@ impl RuntimeBus<'_> {
                 start: address,
                 len: count as u8,
                 instructions,
+                #[cfg(feature = "wasm-jit")]
+                wasm_hint: usize::MAX,
             };
             self.add_instruction_block_pages(cache_index);
         }
 
         self.instruction_cache_invalidated = false;
         let block_len = self.instruction_blocks[cache_index].len as usize;
+        let mut completed = 0;
+        #[cfg(feature = "wasm-jit")]
+        // Preserve the existing interpreter's supplemental-quantum boundary:
+        // short translated prefixes must not introduce an earlier scheduler exit.
+        if quantum_remaining >= block_len {
+            let block = &mut self.instruction_blocks[cache_index];
+            match wasm_jit.execute(
+                &block.instructions[..block_len],
+                instruction_limit,
+                cpu,
+                self.memory,
+                &mut self.wasm_context,
+                quantum_remaining,
+                &mut block.wasm_hint,
+            ) {
+                crate::a330::wasm_jit::Execution::Executed(completed) => {
+                    *previous_pc = cpu.r[15].wrapping_sub(4);
+                    *error_pc = *previous_pc;
+                    return Ok(completed);
+                }
+                crate::a330::wasm_jit::Execution::ExecutedExtra(count) => {
+                    debug_assert!(count > 0 && count <= block_len.min(instruction_limit));
+                    // Preserve the exact final retired instruction, including a
+                    // taken branch. The original loop does not use destination-4.
+                    *previous_pc = address.wrapping_add((count as u32 - 1) * 4);
+                    *error_pc = *previous_pc;
+                    completed = count;
+                    let last = self.instruction_blocks[cache_index].instructions[count - 1];
+                    if last.may_exit_block
+                        && (self.instruction_cache_invalidated
+                            || self.event_pending
+                            || !cpu.is_running()
+                            || cpu.execution_state() != ExecutionState::Arm
+                            || cpu.r[15] != address.wrapping_add(count as u32 * 4))
+                    {
+                        return Ok(completed);
+                    }
+                    // A sequential prefix is not an original block boundary.
+                    // Continue its saved decoded suffix in this same RuntimeBus
+                    // call, before the caller's observers or scheduler run.
+                }
+                crate::a330::wasm_jit::Execution::Stale => {
+                    self.clear_instruction_cache();
+                    *error_pc = cpu.r[15];
+                    cpu.step(self)?;
+                    *previous_pc = *error_pc;
+                    return Ok(1);
+                }
+                crate::a330::wasm_jit::Execution::Fallback => {}
+            }
+        }
         #[cfg(feature = "jit")]
-        let jit_result = {
+        let jit_result = if completed == 0 {
             let heap_base = self.memory.heap_base();
             let heap = self.memory.jit_heap_ptr();
             let generation = self
@@ -162,6 +219,8 @@ impl RuntimeBus<'_> {
                     heap_base,
                 },
             )
+        } else {
+            None
         };
         #[cfg(feature = "jit")]
         if let Some(completed) = jit_result {
@@ -170,8 +229,8 @@ impl RuntimeBus<'_> {
             *error_pc = *previous_pc;
             return Ok(completed);
         }
-        let mut completed = 0;
-        for instruction_index in 0..block_len.min(instruction_limit) {
+        let remaining_instructions = completed..block_len.min(instruction_limit);
+        for instruction_index in remaining_instructions {
             let instruction = self.instruction_blocks[cache_index].instructions[instruction_index];
             let pc = cpu.r[15];
             *error_pc = pc;
@@ -346,6 +405,18 @@ impl Bus for RuntimeBus<'_> {
     }
     fn svc(&mut self, cpu: &mut Cpu, immediate: u32) -> Result<()> {
         self.event_pending = true;
-        self.dispatch(cpu, immediate)
+        let result = self.dispatch(cpu, immediate);
+        // No binding survives an HLE/host call. Preserve even the error path.
+        #[cfg(feature = "wasm-jit")]
+        {
+            self.wasm_context = crate::a330::wasm_jit::SliceContext::bind(
+                self.memory,
+                self.package.load_base(),
+                self.package
+                    .load_base()
+                    .saturating_add(self.package.program_size()),
+            );
+        }
+        result
     }
 }

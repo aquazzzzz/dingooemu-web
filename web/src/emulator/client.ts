@@ -468,7 +468,7 @@ export class EmulatorClient {
     if(!menuOnly&&(!bytes.length||bytes.length>128*1024*1024))throw new Error(t("游戏文件为空或超过 128 MiB。"));
     validateFiles(resources);validateFiles(saves);
     await this.dispose();
-    this.jitApplicable=/\.app$/i.test(name);
+    this.jitApplicable=/\.(app|cc|c2s|c3s)$/i.test(name);
     const generation=++this.loadGeneration;let initializing:Partial<Runtime>|undefined;
     this.failed=undefined;this.loadedContent=false;this.lastReply='';this.lastQuery=0;this.log=[];
     this.onInfo(t("正在初始化 RetroArch 后端…"));
